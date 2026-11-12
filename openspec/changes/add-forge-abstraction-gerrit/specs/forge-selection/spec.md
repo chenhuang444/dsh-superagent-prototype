@@ -32,14 +32,14 @@ Setup SHALL 只解析选中 forge 对应 Source 的账号配置：智能体账�
 
 ### Requirement: 选中 forge 的 Source 必须启用
 选中 forge 对应的 Source SHALL 被视为部署所必需：
-- 该 Source 实例在设置中被关闭时，setup SHALL 报告问题，并停在等待状态；
+- 该 Source 实例在设置中被关闭时，行为与现在关闭 GitHub Source 相同：setup 照常完成，该 Source 的健康项显示"已关闭"，不轮询也不回复；
 - 启动完成后，若该 Source 插件仍未注册（插件被禁用或未安装），`runtime` 健康项 SHALL 报告错误，并指出需要启用的插件 id。
 
 未选中 forge 的 Source SHALL NOT 轮询，健康项显示"未被选为代码托管"。它的账号字段 SHALL NOT 参与 setup，可以保持安装。
 
 #### Scenario: Gerrit Source 实例被关闭
-- **WHEN** `forge` 为 `gerrit`，但设置中 Gerrit Source 处于关闭状态
-- **THEN** setup 停在等待状态，问题指出需要打开 Gerrit Source
+- **WHEN** `forge` 为 `gerrit`，setup 已完成，人在设置中关闭了 Gerrit Source
+- **THEN** Gerrit Source 的健康项显示已关闭，不再轮询；setup 状态不变，与关闭 GitHub Source 的现有行为一致
 
 #### Scenario: Gerrit 插件被禁用
 - **WHEN** `forge` 为 `gerrit`，但 profile 中 `dsh-superagent-gerrit` 插件处于禁用状态

@@ -15,6 +15,7 @@ import { githubKind } from '../src/sources/github.ts'
 import { SourceRegistry } from '../src/sources/registry.ts'
 import type { SourceContext } from '../src/sources/host.ts'
 import { testDeployment } from './fixtures/deployment.ts'
+import { githubForge } from '../src/forge/github.ts'
 
 const settings = SettingsSchema.parse({ sources: { feishu: { enabled: true, config: {} } } })
 const registry = () => {
@@ -51,8 +52,8 @@ it('keeps the execution environment of GitHub Issue, PR and Feishu tickets as it
 })
 
 it('keeps the Executor tools a GitHub deployment registers as they were', () => {
-  const github = { deployment: testDeployment() } as unknown as SourceContext
-  const host = { github } as unknown as ExecutorToolsHost
+  const forgeContext = { deployment: testDeployment() } as unknown as SourceContext
+  const host = { forge: githubForge, forgeContext, resources: { forge: 'github' } } as unknown as ExecutorToolsHost
   const tools = executorTools(host, { id: ticket.id } as Ticket)
   expect(tools.map(tool => ({ name: tool.name, description: tool.description, parameters: z.toJSONSchema(tool.schema) }))).toMatchSnapshot()
 })

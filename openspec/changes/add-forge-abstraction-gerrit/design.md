@@ -230,26 +230,25 @@ change 被 abandon 后又 restore，复用现有 "closed follow 再次 open" 的
 - 列目录：`plugins/gitiles/<p>/+/refs/heads/<分支>/<path>?format=JSON`，返回 `entries`，包含名称、类型和 mode。请求同样走 `/a/` 和 Basic auth，由 `Commands.gerrit` 统一处理，去掉 `)]}'` 前缀的规则同样适用。
 - gitiles 返回 404，而对应路径确实是目录时（例如插件被卸载），报明确的错误，提示 worker 在工单目录中直接查看。不回退到其他方式。
 
-### D10. prompt 用模板词替换，GitHub 渲染结果作为快照
+### D10. prompt 按 forge 选文件，GitHub 渲染结果作为快照
 
-- `prompts/*.md` 和 `prompts/team/*.md` 中与托管相关的说法改为占位符，例如：
-  - `{review}`：PR / change；
-  - `{forge}`：GitHub / Gerrit；
-  - `{cli}`：gh / gerrit；
-  - `{reviewParam}`：pr_number / change_number；
-  - `{pushHint}`：GitHub 为"push 分支并开 PR"，Gerrit 为"运行 `gerrit push`，它会补全 Change-Id，并以 topic `$DSH_SUPERAGENT_NAME` 上传到 `refs/for/<branch>`"。
-- 改写之前，先把 GitHub 部署当前渲染出的全部内置 part 存为测试快照（`tests/fixtures/prompts-github.snap`）。改写后渲染结果必须与快照逐字一致，这条要求见 forge-selection spec。
-- Gerrit 工作流里与 GitHub 差异较大的段落另写成 forge 专属片段，放在 `prompts/forge/gerrit/*.md`，用来替换 GitHub 的对应片段，而不是做逐词替换。例如：
-  - 修改要 amend 同一个提交并保留 Change-Id，不要新开 change；
-  - 用回复评论线程并标记 resolved 来回应 review。
-- `PART_KEYS` 增加 `skill/gerrit`。团队已保存的 `skill/github` 覆盖内容在 Gerrit 部署中不生效，面板也不显示。
+（实现时由"模板词替换"改为"按 forge 选文件"，理由见下。）
 
-**备选方案：** 维护两套完整的 prompt 文件。这样同一处规则一改要改两份，容易漂移，所以不采用。
+- `prompts/*.md` 和 `prompts/team/*.md` 保持原样，就是 GitHub 的文本。`tests/github-baseline.spec.ts` 的快照保证 GitHub 部署的渲染结果逐字不变。
+- Gerrit 的文本放在 `prompts/forge/gerrit/` 下同名的文件里，例如 `prompts/forge/gerrit/work.md`。`promptFile(name, forge)` 在该 forge 有同名文件时读取它，否则读取通用文件。只有含托管用词的文件才需要 Gerrit 版本；不含的文件（如 `shared.md`、`admission.md`）两个 forge 共用。
+- 内置 part（`builtInParts`）、团队默认段（`teamDefaults`）、内置 skill 都按 forge 生成。键名保持不变，只有 skill 的键按 forge 不同：GitHub 部署为 `skill/github`，Gerrit 部署为 `skill/gerrit`。团队保存的覆盖内容按键生效，所以 GitHub 部署保存过的 `skill/github` 覆盖在 Gerrit 部署中不生效，面板也不显示。
+- Gerrit 的文本描述 Gerrit 工作流：一律用 `gerrit push` 上传；修改时 amend 同一个提交，保留 Change-Id；回复评论线程并标记 resolved；不投票，不 Submit，不新开 change。
+
+**为什么不用占位符替换：** 需要改的托管句子约有 60 处，分布在 14 个文件里。其中多数在 Gerrit 下不是换一个词，而是整句含义不同，例如 auto-merge、review 线程、分支认领、`Co-authored-by` 改写分支。用占位符会让 GitHub 文本里混入大量 `{review}`，读起来困难，替换后也很难保证逐字一致。按文件覆盖时，GitHub 文本不动，Gerrit 文本自然通顺。
+
+**代价：** 通用规则改动时，需要同时改 Gerrit 版本。`tests/gerrit-prompts.spec.ts` 会检查两点：每个 Gerrit 文件都有对应的通用文件；Gerrit 渲染结果中不出现 `gh `、`PR`、`pull request`、`pr_number`、`GitHub` 等 GitHub 用词。
+
+**备选方案：** 维护两套完整的 prompt 目录。相比只覆盖需要的文件，它会复制所有与托管无关的文件，所以不采用。
 
 ### D11. KV、SetupPlace、健康项
 
 - `KV.gerrit`：`since`、`cursor(n)`、`retries`，与 `KV.github` 对称，前缀为 `gerrit-`。不需要 CI 指纹，因为投票随消息到达，见 D7。
-- `SetupPlace` 增加 `'gerrit'`。setup 错误码增加 `gerrit*` 系列，包括无法登录、无用户名或邮箱、project 不可读、无上传权限、凭据文件、证书，以及选中 forge 的 Source 被关闭。
+- `SetupPlace` 增加 `'gerrit'`。setup 错误码增加 `gerrit*` 系列，包括无法登录、无用户名或邮箱、project 不可读、无上传权限、凭据文件、证书。选中 forge 的 Source 被关闭不算 setup 问题，与 GitHub 的现有行为一致；插件未注册由 `runtime` 健康项报告。
 - `HealthCode` 增加 `notForge`，表示"未被选为代码托管"。
 - `SETUP_FIELDS` 增加 `gerrit: ['url', 'project', 'netrc', 'ca']`。`setupChanged` 只比较选中 forge 的字段和 feishu 的字段。
 

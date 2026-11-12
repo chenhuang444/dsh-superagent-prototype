@@ -6,30 +6,30 @@
 
 ## 2. Forge 接口与 Deployment 通用化
 
-- [ ] 2.1 新增 `src/forge/types.ts`，定义 `Forge`、`ForgeAccount` 和 `ForgeKind`，内容见 design D1。新增 `src/forge/index.ts`，导出静态表 `FORGES` 和 `forgeOf(kind)`。验证：`pnpm typecheck` 通过。
-- [ ] 2.2 在插件 `Config` 和 `Machine` 中加入 `forge: 'github' | 'gerrit'`，默认 `github`，并把它加进 `machineOf` 的白名单。验证：新增测试，非法取值时启动被拒绝，未设置时为 `github`。
-- [ ] 2.3 改造 `Deployment`：加入 `forge: ForgeAccount & {detail}`，`github` 改为可选，`repository` 由 `forge.repository` 派生（D3）。根据 `tsc` 的报错，逐个改正读取 `deployment.github` 的地方。验证：`pnpm typecheck` 通过。
-- [ ] 2.4 把 `resolveDeployment` 中 GitHub 的部分搬到 `src/forge/github.ts` 的 `resolve`，`src/deployment.ts` 改为按 `machine.forge` 分发。验证：`tests/deployment.spec.ts` 不改断言即可通过。
-- [ ] 2.5 `SetupPlace` 增加 `gerrit`。`SETUP_FIELDS` 和 `setupChanged` 只看选中 forge 和 feishu 的字段。`Setup.checkAccounts` 按 block 选 forge。验证：新增测试，Gerrit 部署修改 GitHub Source 字段时不触发 setup 检查；现有 `tests/settings.spec.ts` 通过。
+- [x] 2.1 新增 `src/forge/types.ts`，定义 `Forge`、`ForgeAccount` 和 `ForgeKind`，内容见 design D1。新增 `src/forge/index.ts`，导出静态表 `FORGES` 和 `forgeOf(kind)`。验证：`pnpm typecheck` 通过。
+- [x] 2.2 在插件 `Config` 和 `Machine` 中加入 `forge: 'github' | 'gerrit'`，默认 `github`，并把它加进 `machineOf` 的白名单。验证：新增测试，非法取值时启动被拒绝，未设置时为 `github`。
+- [x] 2.3 改造 `Deployment`：加入 `forge: ForgeAccount & {detail}`，`github` 改为可选，`repository` 由 `forge.repository` 派生（D3）。根据 `tsc` 的报错，逐个改正读取 `deployment.github` 的地方。验证：`pnpm typecheck` 通过。
+- [x] 2.4 把 `resolveDeployment` 中 GitHub 的部分搬到 `src/forge/github.ts` 的 `resolve`，`src/deployment.ts` 改为按 `machine.forge` 分发。验证：`tests/deployment.spec.ts` 不改断言即可通过。
+- [x] 2.5 `SetupPlace` 增加 `gerrit`。`SETUP_FIELDS` 和 `setupChanged` 只看选中 forge 和 feishu 的字段。`Setup.checkAccounts` 按 block 选 forge。验证：新增测试，Gerrit 部署修改 GitHub Source 字段时不触发 setup 检查；现有 `tests/settings.spec.ts` 通过。
 
 ## 3. worker 环境按 forge 生成
 
-- [ ] 3.1 把 `writeEnvironment` 和 `verifyEnvironment` 中 GitHub 专用的 shim、credential 段、`insteadOf` 段移到 `githubForge.environment`，通用部分保留在 `environment.ts`：MARKER、原子写入、屏蔽命令、LFS、`useConfigOnly`。验证：`tests/environment.spec.ts` 不改断言即可通过，生成的文件与改动前逐字节相同。
+- [x] 3.1 把 `writeEnvironment` 和 `verifyEnvironment` 中 GitHub 专用的 shim、credential 段、`insteadOf` 段移到 `githubForge.environment`，通用部分保留在 `environment.ts`：MARKER、原子写入、屏蔽命令、LFS、`useConfigOnly`。验证：`tests/environment.spec.ts` 不改断言即可通过，生成的文件与改动前逐字节相同。
 - [ ] 3.2 `WORKER_COMMANDS` 改为"通用的 git，加上当前 forge 的 CLI，加上 lark-cli"。Gerrit 部署下，`gh` 写成一个失败并提示改用 `gerrit` 的 shim。验证：新增测试，覆盖 Gerrit 部署下的 shim 列表和 `gh` 的提示文字。
 
 ## 4. 通用代码改走 forge
 
-- [ ] 4.1 `ExecutorToolsHost.github` 改为 `forge` 加 `forgeContext`。`orchestrator_report` 的评审单参数名和说明由 `forge.review.param` 生成，认领逻辑调用 `forge.review.claim`。GitHub 的实现包装现有的 `readPull` 和 `claimPull`。验证：`tests/tools.spec.ts` 通过，GitHub 部署的工具 schema 快照不变。
-- [ ] 4.2 `cards.ts` 改用 `forge.review.of`，`runtime.ts` 改用 `forge.review.endNotices`，替换 `pullOf` 和 `pullEndNotices`。验证：`tests/cards.spec.ts` 和 `tests/runtime.spec.ts` 通过。
-- [ ] 4.3 `assessment.ts` 改用 `forge.readPath`，`resources.ts` 改为注册 `forge.resource` 的前缀和读取函数，并把错误文字里的 "GitHub" 改为 `forge.words.forge`。验证：`tests/assessment.spec.ts`、`tests/views.spec.ts` 和资源相关测试通过。
-- [ ] 4.4 `skill-files.ts`、`context.ts`、`prompts.ts` 和 `sessions.ts` 中的内置 skill 改为"feishu 加上当前 forge 的 skill"。`PART_KEYS` 增加 `skill/gerrit`；非当前 forge 的 skill 覆盖内容不注册、不显示。验证：`tests/prompts.spec.ts` 和 `tests/prompt-config.spec.ts` 通过。
-- [ ] 4.5 `http.ts` 的 `setupView` 增加 `accounts.forge`，原有 `repository` 和 `agent` 字段保留。`src/app/api.ts` 同步类型。面板 `deployment.tsx` 显示 forge 种类，文案加入 `locales.ts`。验证：`tests/http.spec.ts` 和 `tests/panel-deployment.spec.tsx` 通过；新增断言检查 `accounts.forge.kind`。
-- [ ] 4.6 `src/core/assignments.ts` 的 `RECOVERY_NOTE` 中的 "GitHub state" 改为中性的说法，或由宿主注入 forge 用词，但 GitHub 部署的文字保持不变。验证：`tests/core-engine.spec.ts` 通过，快照不变。
+- [x] 4.1 `ExecutorToolsHost.github` 改为 `forge` 加 `forgeContext`。`orchestrator_report` 的评审单参数名和说明由 `forge.review.param` 生成，认领逻辑调用 `forge.review.claim`。GitHub 的实现包装现有的 `readPull` 和 `claimPull`。验证：`tests/tools.spec.ts` 通过，GitHub 部署的工具 schema 快照不变。
+- [x] 4.2 `cards.ts` 改用 `forge.review.of`，`runtime.ts` 改用 `forge.review.endNotices`，替换 `pullOf` 和 `pullEndNotices`。验证：`tests/cards.spec.ts` 和 `tests/runtime.spec.ts` 通过。
+- [x] 4.3 `assessment.ts` 改用 `forge.readPath`，`resources.ts` 改为注册 `forge.resource` 的前缀和读取函数，并把错误文字里的 "GitHub" 改为 `forge.words.forge`。验证：`tests/assessment.spec.ts`、`tests/views.spec.ts` 和资源相关测试通过。
+- [x] 4.4 `skill-files.ts`、`context.ts`、`prompts.ts` 和 `sessions.ts` 中的内置 skill 改为"feishu 加上当前 forge 的 skill"。`PART_KEYS` 增加 `skill/gerrit`；非当前 forge 的 skill 覆盖内容不注册、不显示。验证：`tests/prompts.spec.ts` 和 `tests/prompt-config.spec.ts` 通过。
+- [x] 4.5 `http.ts` 的 `setupView` 增加 `accounts.forge`，原有 `repository` 和 `agent` 字段保留。`src/app/api.ts` 同步类型。面板 `deployment.tsx` 显示 forge 种类，文案加入 `locales.ts`。验证：`tests/http.spec.ts` 和 `tests/panel-deployment.spec.tsx` 通过；新增断言检查 `accounts.forge.kind`。
+- [x] 4.6 `src/core/assignments.ts` 的 `RECOVERY_NOTE` 中的 "GitHub state" 改为中性的说法，或由宿主注入 forge 用词，但 GitHub 部署的文字保持不变。验证：`tests/core-engine.spec.ts` 通过，快照不变。
 
 ## 5. prompt 模板化
 
-- [ ] 5.1 把 `prompts/*.md`、`prompts/team/*.md` 中 PR、GitHub、gh、`pr_number` 等托管用词改为 D10 中的占位符，在 `prompts.ts` 中按 `forge.words` 填充。验证：1.1 的 GitHub 快照逐字一致。
-- [ ] 5.2 新增 `prompts/forge/gerrit/`，写入 Gerrit 专属片段：一律用 `gerrit push` 上传（它负责 Change-Id 和 topic），不用仓库自带的 push 脚本，但上传前要执行"交付要求"列出的检查、修改时 amend 同一个提交、回复评论线程并标记 resolved、不投票也不 Submit、不新开 change。片段在 Gerrit 部署中替换 GitHub 的对应片段。验证：新增 Gerrit prompt 快照测试；人工通读 Gerrit 渲染结果，确认没有残留的 PR 或 gh 字样（测试用正则断言）。
+- [ ] 5.1 让 `promptFile`、`builtInParts`、`teamDefaults`、内置 skill 都按 forge 生成（D10）：Gerrit 部署优先读取 `prompts/forge/gerrit/` 下的同名文件，skill 键按 forge 取 `skill/github` 或 `skill/gerrit`。验证：1.1 的 GitHub 快照逐字一致。
+- [ ] 5.2 新增 `prompts/forge/gerrit/`，写入含托管用词的文件的 Gerrit 版本：一律用 `gerrit push` 上传（它负责 Change-Id 和 topic），不用仓库自带的 push 脚本，但上传前要执行"交付要求"列出的检查、修改时 amend 同一个提交、回复评论线程并标记 resolved、不投票也不 Submit、不新开 change。片段在 Gerrit 部署中替换 GitHub 的对应片段。验证：新增 Gerrit prompt 快照测试；人工通读 Gerrit 渲染结果，确认没有残留的 PR 或 gh 字样（测试用正则断言）。
 - [ ] 5.3 新增 `skills/dsh-superagent-gerrit/SKILL.md`：说明 `gerrit/` 资源路径、`gerrit api` 的用法、inline 回复和 resolve 的 REST 请求体示例、`change_number` 报告规则。验证：`tests/docs.spec.ts`（如有 skill 格式校验）通过，Gerrit 部署的 Session 注册了该 skill。
 
 ## 6. Gerrit 传输层与 forge 解析

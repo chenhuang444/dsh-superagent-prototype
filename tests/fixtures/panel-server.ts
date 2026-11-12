@@ -81,7 +81,7 @@ export const problemOf = (code: SetupCode, values: Record<string, string> = {}) 
 // The kinds' configurations differ, and the fake reads them only as the records the views carry.
 const KINDS = [feishuKind, githubKind] as unknown as SourceKind[]
 export const MACHINE = { stateDir: '/srv/dsh-superagent', promptMaxChars: 100000, admissionContextMaxPages: 10,
-  admissionContextTimeoutMs: 15000 }
+  admissionContextTimeoutMs: 15000, forge: 'github' as 'github' | 'gerrit' }
 
 type Settings = ReturnType<typeof SettingsSchema.parse>
 export interface PanelServer {
@@ -249,7 +249,7 @@ function initial(): PanelServer {
   return {
     health: {}, down: false, pending: 0, opened: [], requests: [], misuse: [], queued: new Set(), dropped: [], failing: [],
     setup: { machine: MACHINE, problem: null, feishuProblem: null,
-      accounts: { repository: 'acme/widgets', agent: 'agent-bot', feishu: { appId: 'cli_bot', brand: 'feishu', botId: 'ou_bot',
+      accounts: { repository: 'acme/widgets', agent: 'agent-bot', forge: { kind: 'github', login: 'agent-bot', repository: 'acme/widgets', web: 'https://github.com' }, feishu: { appId: 'cli_bot', brand: 'feishu', botId: 'ou_bot',
         name: 'Widgets Bot' } } },
     settings, revisions: { policy: 3, eval: 1, executor: 0 },
     prompts: { masterId: 'master', sections: TEAM_SECTIONS, skillName: SKILL_NAME.source, builtin: ['feishu', 'github'],

@@ -1,7 +1,9 @@
 /** Probes repository and account CLIs, configures the worker execution environment and command shims, and tracks setup readiness. */
 import type { Context } from '@deepseek-ai/cordis'
 import { UserError } from '../core/index.ts'
-import { SETUP_FIELDS, resolveDeployment, resolveFeishuBot, workerProbe, type Deployment, type Machine } from '../deployment.ts'
+import { resolveFeishuBot, setupFields, workerProbe, type Deployment, type Machine } from '../deployment.ts'
+import type { ForgeKind } from '../forge/types.ts'
+import { forgeOf, resolveForge } from '../forge/index.ts'
 import { agentVariables, applyEnvironment, verifyEnvironment, withoutDirectory, workerBin, writeEnvironment } from '../infra/environment.ts'
 import type { Settings, SettingsBlock } from '../policy.ts'
 import { SetupError, type SetupProblem } from '../setup.ts'
@@ -13,9 +15,11 @@ export interface SetupHost {
   restart(): void
 }
 
-const setupFields = (settings: Settings) =>
-  JSON.stringify(Object.entries(SETUP_FIELDS).map(([id, keys]) => keys.map(key => settings.sources[id]?.config[key] ?? '')))
-export const setupChanged = (before: Settings, after: Settings): boolean => setupFields(before) !== setupFields(after)
+const fieldsOf = (forge: ForgeKind, settings: Settings) =>
+  JSON.stringify(Object.entries(setupFields(forge)).map(([id, keys]) => keys.map(key => settings.sources[id]?.config[key] ?? '')))
+/** Whether a save changes a Source field that setup reads under `forge`: the forge's Source's accounts or Feishu's bot. */
+export const setupChanged = (before: Settings, after: Settings, forge: ForgeKind = 'github'): boolean =>
+  fieldsOf(forge, before) !== fieldsOf(forge, after)
 
 /**
  * Resolves the target repository, GitHub account, and optional Feishu bot by probing CLIs, then writes and applies the isolated git and shim environment used by worker processes.
@@ -41,6 +45,10 @@ export class Setup {
     return this.resolved
   }
   configured(): boolean { return this.resolved !== undefined }
+  /** The deployment's forge. */
+  get forge() { return forgeOf(this.host.machine.forge) }
+  /** Whether a save changes a field setup reads under this deployment's forge. */
+  changed(before: Settings, after: Settings): boolean { return setupChanged(before, after, this.host.machine.forge) }
   /** Resolve deployment accounts and apply the worker environment, recording `SetupError` failures in `problem`/`feishuProblem` and rethrowing unexpected errors. */
   async run(settings: Settings): Promise<boolean> {
     try { this.resolved = await this.resolve(settings); return true }
@@ -61,11 +69,11 @@ export class Setup {
   async checkAccounts(block: SettingsBlock, settings: Settings): Promise<void> {
     const { machine } = this.host
     const check = block === 'source:feishu' ? resolveFeishuBot(machine, settings.sources.feishu?.config, this.probe())
-      : resolveDeployment(machine, settings.sources.github?.config, this.probe())
+      : resolveForge(machine, settings, this.probe())
     await check.catch((error: unknown) => { if (!(error instanceof SetupError) || error.place === block.slice(7)) throw error })
   }
   async blockCommands(blocked: readonly string[]): Promise<void> {
-    if (this.resolved) await writeEnvironment(this.resolved, blocked)
+    if (this.resolved) await writeEnvironment(this.resolved, blocked, this.forge.environment)
   }
   restore(): void { this.restoreEnvironment?.(); this.restoreEnvironment = undefined }
   /** Probes CLIs the way worker shells run them, using `stateDir` as `cwd` since it exists even before the repository clone is valid. */
@@ -76,7 +84,7 @@ export class Setup {
   private async resolve(settings: Settings): Promise<Deployment> {
     const { context, machine, lifetime } = this.host
     const probe = this.probe()
-    const deployment = await resolveDeployment(machine, settings.sources.github?.config, probe)
+    const deployment = await resolveForge(machine, settings, probe)
     const feishu = await resolveFeishuBot(machine, settings.sources.feishu?.config, probe).catch((error: unknown) => {
       if (!(error instanceof SetupError)) throw error
       this.feishuProblem = error.problem
@@ -88,9 +96,9 @@ export class Setup {
       if (error instanceof SetupError) throw error
       throw new SetupError('environmentFailed', { output: error instanceof Error ? error.message : String(error) })
     }
-    await writeEnvironment(resolved, settings.executor.blockedCommands).catch(machineProblem)
+    await writeEnvironment(resolved, settings.executor.blockedCommands, this.forge.environment).catch(machineProblem)
     this.restoreEnvironment = applyEnvironment(this.variables, machine.stateDir, this.path)
-    await verifyEnvironment(resolved, context.subprocess, lifetime).catch((error: unknown) => {
+    await verifyEnvironment(resolved, context.subprocess, lifetime, this.forge.environment).catch((error: unknown) => {
       this.restore()
       machineProblem(error)
     })

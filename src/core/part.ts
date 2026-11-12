@@ -15,6 +15,8 @@ export interface EngineOptions {
   prepareTicket?: (ticket: Ticket, outcome: Extract<AssessmentOutcome, { kind: 'accept' }>) => Ticket
   now?: () => string
   emit?: (event: DomainEvent) => void
+  /** The code host's display name in fixed notes to workers, such as `GitHub`; GitHub when omitted. */
+  forgeName?: string
 }
 
 /**

@@ -18,7 +18,8 @@ export interface WorkerReport {
   /** The person's question this report answers, which the worker thereby takes up; authorizes the main Session to send an answer reply. */
   answers?: string
 }
-const RECOVERY_NOTE = 'The host restarted during this ticket. Inspect the current worktree, git history and GitHub state before continuing. Do not repeat an already completed external operation. Finish the original assignment and report its status.'
+/** The note of an Assignment the host restarted; `{forge}` names the code host whose state the worker inspects. */
+export const recoveryNote = (forge = 'GitHub'): string => 'The host restarted during this ticket. Inspect the current worktree, git history and ' + forge + ' state before continuing. Do not repeat an already completed external operation. Finish the original assignment and report its status.'
 
 /**
  * Assignments records what the Executor and its workers report about the Assignments that run tickets: one started, Inputs
@@ -87,7 +88,7 @@ export class Assignments extends EnginePart {
     const report = running.report
     const busy = !!running.deliveredAt && !!report && running.deliveredAt >= report.at
     const settled = !!report && ['waiting', 'ready', 'blocked', 'failed'].includes(report.state) && !busy
-    if (!settled) this.tickets.restart(ticket, running, 'hostRestarted', RECOVERY_NOTE)
+    if (!settled) this.tickets.restart(ticket, running, 'hostRestarted', recoveryNote(this.options.forgeName))
     else if (ticket.undelivered.length) this.options.executor.deliver(ticket, running)
   }
   /**

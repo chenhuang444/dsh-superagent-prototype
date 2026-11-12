@@ -298,6 +298,10 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/limits.ts` | The limits of the values a person sets, which the settings schemas check and the panel's fields offer |
 | `src/kv.ts` | `KV`: every family of `kv` records with its key, its value's type and its owner, and the `Key` and `Family` types the Store and `SourceContext.state` take |
 | `src/navigation.ts` | Opens a DeepSeek Harness Session from the panel once the host's catalog lists it |
+| `src/forge/types.ts` | The `Forge` protocol: a code host's account, setup, worker environment, review rules, repository reads, originals and skill |
+| `src/forge/index.ts` | The forges by kind, `forgeOf` and `resolveForge`, the setup of the deployment's one forge (`Machine.forge`) |
+| `src/forge/review.ts` | `reviewOf`: the review a ticket card names, `pr_number` or `change_number`, from the Threads the ticket follows |
+| `src/forge/github.ts`, `github-environment.ts` | The GitHub forge: pull requests as reviews, the `github/` originals, and the `gh` shim and github.com credentials of the worker environment |
 | `src/core/model.ts` | The domain types, among them the typed Ticket and `MandateBasis`, with `threadKey`, `ticketOutcome`, `reached`, `followupOwners`, `settled`, `waitsForPerson`, `liveTicket`, `runningAssignment`, `latestAssignment` and `latestReport` |
 | `src/core/ports.ts` | The ports: `Repositories`, `Policy`, `SourceScope`, `Assessor`, `Executor`, `Outbox`, and the domain events |
 | `src/core/engine.ts` | The Engine, the core's entry point, and the role interfaces `EngineForSources`, `EngineForMainSession`, `EngineForPeople`, `EngineForSettings` and `EngineForExecutor` |

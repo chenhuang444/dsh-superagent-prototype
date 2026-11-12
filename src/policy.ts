@@ -8,7 +8,7 @@ import { ADMISSION_DEFAULTS, type Admission, type AdmissionCell, type AdmissionR
 import { key, type AssessmentOutcome, type Mandate, type Policy, type PolicyEffect, type SourceScope, type Strength, type Thread, type Ticket,
   type Trigger, type ActorRef, type GateResult } from './core/index.ts'
 import { sameName } from './infra/text.ts'
-import { WORKER_COMMANDS } from './infra/environment.ts'
+import { PROTECTED_COMMANDS } from './infra/environment.ts'
 
 export const RuleIdSchema = z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/)
 export const RuleMatchSchema = z.object({ rule_id: RuleIdSchema, reason: z.string().trim().min(1).max(500) }).strict()
@@ -86,7 +86,7 @@ export const EvalConfigSchema = z.object({
   model: RoleModelSchema.nullable().default(null),
 }).strict()
 const CommandNameSchema = z.string().regex(/^[A-Za-z0-9._-]+$/).refine(name => name !== '.' && name !== '..', 'Not a command name')
-  .refine(name => !WORKER_COMMANDS.includes(name), `${WORKER_COMMANDS.join(', ')} cannot be blocked`)
+  .refine(name => !PROTECTED_COMMANDS.includes(name), `${PROTECTED_COMMANDS.join(', ')} cannot be blocked`)
 /** Executor settings: worker model, concurrency, ticket directory root (empty defaults to `<stateDir>/work`), `prepare` command, and blocked commands. */
 export const ExecutorConfigSchema = z.object({
   model: RoleModelSchema.nullable().default(null),

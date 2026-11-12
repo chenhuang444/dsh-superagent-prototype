@@ -8,6 +8,7 @@ import { z } from 'zod'
 import type { SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
 import { runAsWorker, sameDirectory, withoutDirectory, workerBin } from './infra/environment.ts'
 import { SetupError } from './setup.ts'
+import { FORGE_KINDS, type ForgeAccount, type ForgeKind } from './forge/types.ts'
 
 const reason = (error: unknown): string => error instanceof Error ? error.message : String(error)
 const absolute = (description: string) => s.string().pattern(/^\//).description(`${description} Absolute path.`)
@@ -20,6 +21,8 @@ export const Config = s.object({
     .description('Pages of thread context one assessment may read.').volatile(),
   admissionContextTimeoutMs: s.number().min(LIMITS.admissionContextTimeoutMs.min).max(LIMITS.admissionContextTimeoutMs.max).step(1)
     .default(15000).description('Time limit of one context read during an assessment, in milliseconds.').volatile(),
+  forge: s.union(FORGE_KINDS).default('github')
+    .description('The code host of this deployment: github or gerrit. Its Source plugin must be enabled; changing it remounts the plugin.'),
 })
 export type DeploymentConfig = ReturnType<typeof Config>
 export interface Machine {
@@ -27,6 +30,8 @@ export interface Machine {
   promptMaxChars: Volatile<number>
   admissionContextMaxPages: Volatile<number>
   admissionContextTimeoutMs: Volatile<number>
+  /** The deployment's one code host. */
+  forge: ForgeKind
 }
 const MOVED: Record<string, string> = {
   repository: 'on the GitHub Source', branchPrefix: 'in the prepare command of the Execution settings', github: 'on the GitHub Source',
@@ -39,7 +44,9 @@ export function machineOf(config: DeploymentConfig): Machine {
   const unknown = Object.keys(config).filter(key => !(key in (Config.dict ?? {})))
   if (unknown.length) throw new Error(`dsh-superagent configuration has keys it does not use: ${unknown.map(key => MOVED[key] ? `${key} (now ${MOVED[key]})` : key).join(', ')}; docs/006-deployment.md lists the keys`)
   const { stateDir, promptMaxChars, admissionContextMaxPages, admissionContextTimeoutMs } = config
-  return { stateDir, promptMaxChars, admissionContextMaxPages, admissionContextTimeoutMs }
+  const forge = config.forge ?? 'github'
+  if (!FORGE_KINDS.includes(forge)) throw new Error(`dsh-superagent configuration names forge ${String(forge)}; forge takes only ${FORGE_KINDS.join(' or ')}`)
+  return { stateDir, promptMaxChars, admissionContextMaxPages, admissionContextTimeoutMs, forge }
 }
 
 export const GithubAccountsSchema = z.object({
@@ -47,14 +54,46 @@ export const GithubAccountsSchema = z.object({
   cli: z.string().trim().default(''),
 })
 export const FeishuBotSchema = z.object({ cli: z.string().trim().default('') })
-/** Source configuration keys that affect deployment setup and trigger a restart when changed. */
-export const SETUP_FIELDS: Readonly<Record<string, readonly string[]>> = { github: Object.keys(GithubAccountsSchema.shape), feishu: Object.keys(FeishuBotSchema.shape) }
+/** The Gerrit Source's configuration that setup reads: the server, the project, the credential file and an optional CA file. */
+export const GerritAccountsSchema = z.object({
+  url: z.string().trim().regex(/^(https:\/\/[^/\s?#]+(\/[^\s?#]*[^/\s?#])?)?$/, 'An https:// address without a trailing slash').default(''),
+  project: z.string().trim().regex(/^([A-Za-z0-9_.\-]+(\/[A-Za-z0-9_.\-]+)*)?$/, 'A project name').default(''),
+  netrc: z.string().trim().refine(path => path === '' || path.startsWith('/'), 'An absolute path').default(''),
+  ca: z.string().trim().refine(path => path === '' || path.startsWith('/'), 'An absolute path, or empty').default(''),
+})
+/** Source configuration keys that setup reads, by Source; a change to one of the forge's or Feishu's restarts dsh-superagent. */
+const ACCOUNT_FIELDS: Readonly<Record<string, readonly string[]>> = { github: Object.keys(GithubAccountsSchema.shape),
+  gerrit: Object.keys(GerritAccountsSchema.shape), feishu: Object.keys(FeishuBotSchema.shape) }
+/** The Source configuration keys setup reads under `forge`: the forge's Source's and Feishu's; another forge's Source has none. */
+export const setupFields = (forge: ForgeKind): Readonly<Record<string, readonly string[]>> =>
+  ({ [forge]: ACCOUNT_FIELDS[forge]!, feishu: ACCOUNT_FIELDS.feishu! })
+/** The keys setup reads of a GitHub deployment; `setupFields` gives them for any forge. */
+export const SETUP_FIELDS: Readonly<Record<string, readonly string[]>> = setupFields('github')
 
 export interface Deployment extends Machine {
+  /** The agent's account on the deployment's forge (`Machine.forge`). */
+  account: ForgeAccount
+  /** The repository or project the forge works on; the same as `account.repository`. */
   repository: string
-  github: { cli: string; login: string; noreply: string }
+  /** The GitHub CLI and account, present only when the forge is GitHub. */
+  github?: GithubAccount
+  /** The Gerrit server and account, present only when the forge is Gerrit. */
+  gerrit?: GerritAccount
   feishu?: FeishuBot
 }
+export interface GithubAccount { cli: string; login: string; noreply: string }
+/** The deployment's GitHub account; the GitHub Source and the GitHub forge run only when the forge is GitHub. @throws otherwise */
+export function githubOf(deployment: Pick<Deployment, 'github'>): GithubAccount {
+  if (!deployment.github) throw new Error('This deployment\'s code host is not GitHub')
+  return deployment.github
+}
+/** The deployment's Gerrit account; the Gerrit Source and the Gerrit forge run only when the forge is Gerrit. @throws otherwise */
+export function gerritOf(deployment: Pick<Deployment, 'gerrit'>): GerritAccount {
+  if (!deployment.gerrit) throw new Error('This deployment\'s code host is not Gerrit')
+  return deployment.gerrit
+}
+/** The Gerrit server, project and agent account; `netrc` and `ca` are file paths, never their contents. */
+export interface GerritAccount { url: string; project: string; netrc: string; ca?: string; id: number; username: string; email: string }
 export interface FeishuBot { cli: string; appId: string; brand: 'feishu' | 'lark'; botId: string; name: string }
 
 /** Resolve a command name or absolute path to an executable file, ignoring the worker shim directory. */
@@ -102,7 +141,9 @@ export async function resolveDeployment(machine: Machine, github: unknown, probe
   if (!access) throw new SetupError('repositoryUnreported', { repository: remote })
   const repository = access.name
   if (access.push !== true) throw new SetupError('repositoryReadOnly', { account: agent.login, repository })
-  return { ...machine, repository, github: { cli, login: agent.login, noreply: `${agent.id}+${agent.login}@users.noreply.github.com` } }
+  const noreply = `${agent.id}+${agent.login}@users.noreply.github.com`
+  return { ...machine, repository, github: { cli, login: agent.login, noreply },
+    account: { kind: 'github', login: agent.login, email: noreply, repository, web: 'https://github.com' } }
 }
 
 const AuthStatus = z.object({ appId: z.string().regex(/^cli_[A-Za-z0-9]+$/), brand: z.enum(['feishu', 'lark']).default('feishu'), identities: z.object({ bot: z.object({ status: z.string() }) }) })

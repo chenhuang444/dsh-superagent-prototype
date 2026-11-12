@@ -557,6 +557,9 @@ it('projects read models for the management page and removes thread subscription
   expect((await api('GET', 'state')).body).not.toHaveProperty('tickets')
   // scripts/dsh-superagent and agents read health from GET state (docs/006, Management API); settings and their revisions have their own route.
   expect((await api('GET', 'state')).body).toMatchObject({ health: { runtime: { state: expect.any(String) } }, paused: false, load: { maxWorkers: 3 } })
+  // The forge the deployment resolved is named beside the fields earlier panels read.
+  expect((await api('GET', 'state')).body).toMatchObject({ setup: { machine: { forge: 'github' }, accounts: { repository: 'acme/widgets', agent: 'agent-bot',
+    forge: { kind: 'github', login: 'agent-bot', repository: 'acme/widgets', web: 'https://github.com' } } } })
   expect((await api('GET', 'settings')).body).toMatchObject({ sources: expect.arrayContaining([expect.objectContaining({ id: 'github',
     revision: expect.any(Number), value: expect.objectContaining({ enabled: true }) })]), blocks: { policy: { revision: expect.any(Number) } } })
   expect((await api('POST', `threads/${encodeURIComponent(threadKeyValue)}/unsubscribe`)).body).toMatchObject({ removed: true })

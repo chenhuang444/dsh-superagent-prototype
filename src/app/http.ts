@@ -90,15 +90,15 @@ function failure(error: unknown): [number, Record<string, unknown>] {
   return [500, { error: error instanceof Error ? error.message : String(error) }]
 }
 
-function machineView({ stateDir, promptMaxChars, admissionContextMaxPages, admissionContextTimeoutMs }: Machine) {
+function machineView({ stateDir, promptMaxChars, admissionContextMaxPages, admissionContextTimeoutMs, forge }: Machine) {
   return { stateDir, promptMaxChars: promptMaxChars.get(), admissionContextMaxPages: admissionContextMaxPages.get(),
-    admissionContextTimeoutMs: admissionContextTimeoutMs.get() }
+    admissionContextTimeoutMs: admissionContextTimeoutMs.get(), forge }
 }
 function setupView(runtime: HttpHost) {
   const resolved = runtime.configured() ? runtime.deployment : undefined
   return {
     machine: machineView(runtime.machine), problem: runtime.setupProblem ?? null, feishuProblem: runtime.feishuProblem ?? null,
-    accounts: resolved ? { repository: resolved.repository, agent: resolved.github.login, feishu: resolved.feishu ? { appId: resolved.feishu.appId, brand: resolved.feishu.brand, botId: resolved.feishu.botId, name: resolved.feishu.name } : null } : null,
+    accounts: resolved ? { repository: resolved.repository, agent: resolved.account.login, forge: { kind: resolved.account.kind, login: resolved.account.login, repository: resolved.account.repository, web: resolved.account.web }, feishu: resolved.feishu ? { appId: resolved.feishu.appId, brand: resolved.feishu.brand, botId: resolved.feishu.botId, name: resolved.feishu.name } : null } : null,
   }
 }
 /** Build the `/orchestrator/api/state` response consumed by the management panel and `scripts/dsh-superagent status` (`docs/006-deployment.md`). */
@@ -158,7 +158,7 @@ function routes(runtime: HttpHost): Routes {
       executorLoad(store, runtime.executor.activeCount()), runtime.setupProblem ?? runtime.feishuProblem),
     'GET search': ({ query }) => search(views(runtime), query.q ?? '', runtime.sourceLinks),
     'GET sources': () => sourcesStatus(views(runtime), runtime.health, setupState(runtime)),
-    'GET settings': () => settingsView(store, runtime.sources, runtime.health, setupState(runtime), runtime.machine.stateDir),
+    'GET settings': () => settingsView(store, runtime.sources, runtime.health, setupState(runtime), runtime.machine.stateDir, runtime.machine.forge),
     'POST sources/:id/labels': ({ params }) => runtime.settings.refreshLabels(params.id),
     'GET threads': ({ query }) => {
       const { filter, offset, limit } = ThreadsQuery.parse(query)

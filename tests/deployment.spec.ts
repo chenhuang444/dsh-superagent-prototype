@@ -4,7 +4,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { Config, executable, machineOf, resolveDeployment, resolveFeishuBot, type Machine, type Probe } from '../src/deployment.ts'
+import { Config, SETUP_FIELDS, executable, machineOf, resolveDeployment, resolveFeishuBot, setupFields, type Machine, type Probe } from '../src/deployment.ts'
+import { setupChanged } from '../src/app/setup.ts'
+import { SettingsSchema } from '../src/policy.ts'
 import { gitEnv } from './fixtures/git.ts'
 
 const exec = promisify(execFile)
@@ -46,13 +48,34 @@ describe('configuration schema', () => {
     // Limits are volatile references that the loader updates in place and callers read when used.
     expect({ ...read, promptMaxChars: read.promptMaxChars.get(), admissionContextMaxPages: read.admissionContextMaxPages.get(),
       admissionContextTimeoutMs: read.admissionContextTimeoutMs.get() })
-      .toEqual({ stateDir: join(dir, 'state'), promptMaxChars: 100000, admissionContextMaxPages: 10, admissionContextTimeoutMs: 15000 })
+      .toEqual({ stateDir: join(dir, 'state'), promptMaxChars: 100000, admissionContextMaxPages: 10, admissionContextTimeoutMs: 15000, forge: 'github' })
     expect(() => Config(minimal({ stateDir: 'relative/dir' }))).toThrow()
     expect(() => Config(minimal({ stateDir: '~/dir' }))).toThrow()
+  })
+  it('selects one code host, GitHub when the configuration names none, and refuses any other', () => {
+    expect(machineOf(Config({ stateDir: join(dir, 'state') })).forge).toBe('github')
+    expect(machineOf(Config({ stateDir: join(dir, 'state'), forge: 'gerrit' })).forge).toBe('gerrit')
+    expect(() => Config({ stateDir: join(dir, 'state'), forge: 'gitlab' as never })).toThrow()
+    expect(() => machineOf({ ...Config({ stateDir: join(dir, 'state') }), forge: 'gitlab' } as never)).toThrow('forge takes only github or gerrit')
   })
   it('names keys the configuration does not define, and where the values of older keys live now', () => {
     const raw = minimal({ repository: 'acme/widgets', repositoryPath: '/srv/widgets', blockedCommands: [], author: { name: 'Alice' }, extra: 1 })
     expect(() => machineOf(Config(raw))).toThrow('keys it does not use: repository (now on the GitHub Source), repositoryPath (now in the prepare command of the Execution settings), blockedCommands (now in the Execution settings), author (now prompt text), extra;')
+  })
+})
+
+describe('setup fields', () => {
+  const settings = (sources: Record<string, Record<string, unknown>>) =>
+    SettingsSchema.parse({ sources: Object.fromEntries(Object.entries(sources).map(([id, config]) => [id, { enabled: true, config }])) })
+  it('restart only for the fields of the deployment\'s forge and of Feishu', () => {
+    const before = settings({ github: { repository: 'acme/widgets', cli: 'gh' }, gerrit: { url: 'https://gerrit.example.com', project: 'widgets' }, feishu: { cli: 'lark' } })
+    const github = settings({ github: { repository: 'acme/other', cli: 'gh' }, gerrit: { url: 'https://gerrit.example.com', project: 'widgets' }, feishu: { cli: 'lark' } })
+    const gerrit = settings({ github: { repository: 'acme/widgets', cli: 'gh' }, gerrit: { url: 'https://gerrit.example.com', project: 'other' }, feishu: { cli: 'lark' } })
+    const feishu = settings({ github: { repository: 'acme/widgets', cli: 'gh' }, gerrit: { url: 'https://gerrit.example.com', project: 'widgets' }, feishu: { cli: 'lark2' } })
+    expect([setupChanged(before, github, 'github'), setupChanged(before, gerrit, 'github'), setupChanged(before, feishu, 'github')]).toEqual([true, false, true])
+    expect([setupChanged(before, github, 'gerrit'), setupChanged(before, gerrit, 'gerrit'), setupChanged(before, feishu, 'gerrit')]).toEqual([false, true, true])
+    expect(setupFields('gerrit')).toEqual({ gerrit: ['url', 'project', 'netrc', 'ca'], feishu: ['cli'] })
+    expect(SETUP_FIELDS).toEqual({ github: ['repository', 'cli'], feishu: ['cli'] })
   })
 })
 

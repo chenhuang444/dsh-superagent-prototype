@@ -2,7 +2,8 @@
 import { z } from 'zod'
 import { UserError, key } from '../core/index.ts'
 import { policyVersion, type Settings, type SettingsOrigin } from '../policy.ts'
-import { masterPrompt, workerPrompt, sharedPrompt, guides, mainAdmissionPolicy, handoffPolicy, teamDefaults, sourceSkills, cliNotes } from './context.ts'
+import { forgeTexts, textsForge } from './context.ts'
+import type { ForgeKind } from '../forge/types.ts'
 import { environmentLines, type Variable } from './execution-environment.ts'
 import { promptsNotice } from './notices.ts'
 import type { Sessions } from './sessions.ts'
@@ -18,13 +19,16 @@ const TEAM_HEADINGS: Record<TeamSection, string> = { communication: 'Communicati
 export const SKILL_NAME = /^[a-z][a-z0-9-]*$/
 /** Prefix prepended to skill names when registering them in DSH Sessions. */
 export const SKILL_PREFIX = 'dsh-superagent-'
-const SkillNameSchema = z.string().regex(SKILL_NAME).refine(name => !(Object.keys(sourceSkills) as string[]).includes(name),
-  'This name belongs to a built-in skill')
+/** Every built-in skill's name, under any forge; a team skill may take none of them. */
+const BUILT_IN_SKILLS: readonly string[] = ['feishu', 'github', 'gerrit']
+const SkillNameSchema = z.string().regex(SKILL_NAME).refine(name => !BUILT_IN_SKILLS.includes(name), 'This name belongs to a built-in skill')
 /** The built-in parts a team may override, by key: both roles' parts, the Source skills, and the generated parts' templates. */
 const PART_KEYS = ['runtime/shared', 'runtime/orchestrator', 'runtime/worker', 'runtime/subscriptions', 'runtime/replies',
   'runtime/dispatch', 'runtime/work', 'runtime/admission', 'runtime/handoff/orchestrator', 'runtime/handoff/worker', 'runtime/environment',
-  'runtime/policy', 'runtime/policy/none', 'skill/feishu', 'skill/github'] as const
+  'runtime/policy', 'runtime/policy/none', 'skill/feishu', 'skill/github', 'skill/gerrit'] as const
 export type PartKey = typeof PART_KEYS[number]
+/** The skill parts of the forges a deployment does not use, which its built-in parts leave out. */
+const otherForgeSkills = (forge: ForgeKind): PartKey[] => (['github', 'gerrit'] as const).filter(kind => kind !== forge).map(kind => `skill/${kind}` as const)
 /** A team's text for a built-in part, and `base`, the key of the built-in text it was edited from. */
 const OverrideSchema = z.object({ text: z.string(),
   base: z.string().optional().describe('Key of the built-in text it was edited from; copy as read, or omit.') }).strict()
@@ -39,7 +43,7 @@ export type PromptConfig = z.infer<typeof PromptConfigSchema>
 export interface PromptVersion { revision: number; previousRevision: number | null; savedAt: string; source: string; config: PromptConfig;
   /** Original unmigrated config preserved when differences cannot be compared across schema versions. */
   legacy?: { config: unknown } }
-export const defaultPrompts = (): PromptConfig => ({ ...teamDefaults, skills: {} })
+export const defaultPrompts = (): PromptConfig => ({ ...forgeTexts(textsForge()).teamDefaults, skills: {} })
 
 const ENVIRONMENT_HEADING = 'Execution environment (from this installation\'s settings; it takes precedence over any repository or account named elsewhere in these instructions; an empty value means that part is not configured here). The prepare command of a ticket directory reads the same variables:'
 const POLICY_HEAD = '## Policy\nPolicy version {version}; accept mode {mode}. The accept mode and the rules decide proactive candidates only: an explicit request is routed as dispatch says, in any mode and whatever the rules.'
@@ -47,12 +51,25 @@ type Role = 'orchestrator' | 'worker'
 /** A built-in part a team may override: the roles that read it, its text, and the placeholders a template's override keeps. */
 interface BuiltInPart { roles: readonly Role[]; text: string; placeholders?: readonly string[] }
 const BOTH: readonly Role[] = ['orchestrator', 'worker'], MAIN: readonly Role[] = ['orchestrator'], WORKER: readonly Role[] = ['worker']
-let parts: Readonly<Record<PartKey, BuiltInPart>> | undefined
+const parts = new Map<ForgeKind, Readonly<Record<PartKey, BuiltInPart>>>()
 /**
- * The built-in parts of both roles' prompts, the two Source skills, and the templates of the generated parts, whose data the
- * system fills in, by the key an override names them by. Built on first use, as the texts it reads are imported in a cycle.
+ * The built-in parts of both roles' prompts, the deployment's two Source skills (Feishu's and its forge's), and the templates
+ * of the generated parts, whose data the system fills in, by the key an override names them by. Built on first use per
+ * forge, as the texts it reads are imported in a cycle.
  */
-export const builtInParts = (): Readonly<Record<PartKey, BuiltInPart>> => parts ??= {
+export const builtInParts = (forge: ForgeKind = textsForge()): Readonly<Record<PartKey, BuiltInPart>> => {
+  let built = parts.get(forge)
+  if (!built) {
+    const all = partsOf(forge)
+    // Another forge's skill is no part of this deployment; its key names no part here.
+    for (const key of otherForgeSkills(forge)) delete all[key]
+    parts.set(forge, built = all as Record<PartKey, BuiltInPart>)
+  }
+  return built
+}
+function partsOf(forge: ForgeKind): Partial<Record<PartKey, BuiltInPart>> {
+  const { sharedPrompt, masterPrompt, workerPrompt, guides, mainAdmissionPolicy, handoffPolicy, sourceSkills, cliNotes } = forgeTexts(forge)
+  return {
   'runtime/shared': { roles: BOTH, text: sharedPrompt }, 'runtime/orchestrator': { roles: MAIN, text: masterPrompt },
   'runtime/worker': { roles: WORKER, text: workerPrompt },
   'runtime/subscriptions': { roles: BOTH, text: `## subscriptions\n${guides.subscriptions}` },
@@ -67,6 +84,8 @@ export const builtInParts = (): Readonly<Record<PartKey, BuiltInPart>> => parts 
     placeholders: ['{version}', '{mode}'] },
   'skill/feishu': { roles: BOTH, text: `${sourceSkills.feishu}\n\n## CLI usage\n${cliNotes}` },
   'skill/github': { roles: BOTH, text: `${sourceSkills.github}\n\n## CLI usage\n${cliNotes}` },
+  'skill/gerrit': { roles: BOTH, text: `${sourceSkills.gerrit}\n\n## CLI usage\n${cliNotes}` },
+  }
 }
 /** The key of a built-in text, which an override's `base` records. */
 export const builtInBase = (text: string): string => key('prompt-built-in', text)
@@ -118,7 +137,7 @@ export function composePrompt(config: PromptConfig, role: Role, environment?: st
   return promptParts(config, role, environment, policy).map(part => part.text).join('\n\n')
 }
 export function composeSkill(config: PromptConfig, name: string): string {
-  return name === 'feishu' || name === 'github' ? builtIn(config, `skill/${name}`) : config.skills[name] ?? ''
+  return name === 'feishu' || name === textsForge() ? builtIn(config, `skill/${name}` as PartKey) : config.skills[name] ?? ''
 }
 
 /** An override whose built-in text changed since its `base`, with that text when kept, or whose part this version no longer has. */
@@ -144,7 +163,7 @@ export class Prompts {
   }
   /** Returns skills to register in every Session: built-in Source skills (`feishu` only when a Feishu bot is configured) followed by team skills. */
   skills(config: PromptConfig): [string, string][] {
-    return [...this.feishu() ? ['feishu'] : [], 'github', ...Object.keys(config.skills)].map(name => [name, composeSkill(config, name)])
+    return [...this.feishu() ? ['feishu'] : [], textsForge(), ...Object.keys(config.skills)].map(name => [name, composeSkill(config, name)])
   }
   current(): PromptVersion {
     const revision = this.versions.revision()

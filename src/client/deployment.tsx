@@ -62,7 +62,7 @@ export function DeploymentPage({ setup, form, accounts: showAccounts }: { setup:
         <p className="dt-error" role="status"><SetupMessage problem={setup.problem} lead /></p><CheckSetupButton />
       </div>}
       {showAccounts && <Section title={t('deploymentDerived')} hint={t('deploymentDerivedHint')}>
-        <KeyValues rows={[[t('deploymentRepository'), accounts?.repository ?? '—'],
+        <KeyValues rows={[[t('deploymentForge'), t(`source.${accounts?.forge.kind ?? setup.machine.forge}`)], [t('deploymentRepository'), accounts?.repository ?? '—'],
           [t('deploymentAgent'), accounts ? `@${accounts.agent}` : '—'], [t('deploymentFeishu'), feishu]]} />
         <Hint>{t('deploymentAccountsWhere')}</Hint>
       </Section>}
