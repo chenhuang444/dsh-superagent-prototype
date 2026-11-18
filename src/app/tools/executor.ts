@@ -15,7 +15,7 @@ export interface ExecutorToolsHost {
   readonly store: Pick<Store, 'tickets' | 'replyStatus' | 'atomic'>
   readonly sessions: Pick<Sessions, 'relay' | 'notify'>
   readonly resources: ResourceHost
-  /** The deployment's forge, whose review rules govern claiming a reported review (a GitHub PR, a Gerrit change). */
+  /** The deployment's forge, whose review rules govern claiming a reported review (a GitHub PR, a GitLab MR). */
   readonly forge: Forge
   /** The context of the forge's Source, through which a claim binds the review's Thread. */
   readonly forgeContext: SourceContext

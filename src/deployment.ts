@@ -22,7 +22,7 @@ export const Config = s.object({
   admissionContextTimeoutMs: s.number().min(LIMITS.admissionContextTimeoutMs.min).max(LIMITS.admissionContextTimeoutMs.max).step(1)
     .default(15000).description('Time limit of one context read during an assessment, in milliseconds.').volatile(),
   forge: s.union(FORGE_KINDS).default('github')
-    .description('The code host of this deployment: github or gerrit. Its Source plugin must be enabled; changing it remounts the plugin.'),
+    .description('The code host of this deployment: github or gitlab. Its Source plugin must be enabled; changing it remounts the plugin.'),
 })
 export type DeploymentConfig = ReturnType<typeof Config>
 export interface Machine {
@@ -54,16 +54,18 @@ export const GithubAccountsSchema = z.object({
   cli: z.string().trim().default(''),
 })
 export const FeishuBotSchema = z.object({ cli: z.string().trim().default('') })
-/** The Gerrit Source's configuration that setup reads: the server, the project, the credential file and an optional CA file. */
-export const GerritAccountsSchema = z.object({
-  url: z.string().trim().regex(/^(https:\/\/[^/\s?#]+(\/[^\s?#]*[^/\s?#])?)?$/, 'An https:// address without a trailing slash').default(''),
-  project: z.string().trim().regex(/^([A-Za-z0-9_.\-]+(\/[A-Za-z0-9_.\-]+)*)?$/, 'A project name').default(''),
-  netrc: z.string().trim().refine(path => path === '' || path.startsWith('/'), 'An absolute path').default(''),
-  ca: z.string().trim().refine(path => path === '' || path.startsWith('/'), 'An absolute path, or empty').default(''),
+/**
+ * The GitLab Source's configuration that setup reads: the server's address (`https://host[:port]`, no path), the project
+ * (`group/name`, subgroups allowed) and the agent's `glab`.
+ */
+export const GitlabAccountsSchema = z.object({
+  url: z.string().trim().regex(/^(https:\/\/[A-Za-z0-9.-]+(:\d+)?)?$/, 'https://host[:port], without a path or trailing slash').default(''),
+  project: z.string().trim().regex(/^([A-Za-z0-9_.-]+(\/[A-Za-z0-9_.-]+)+)?$/, 'group/name').default(''),
+  cli: z.string().trim().default(''),
 })
 /** Source configuration keys that setup reads, by Source; a change to one of the forge's or Feishu's restarts dsh-superagent. */
 const ACCOUNT_FIELDS: Readonly<Record<string, readonly string[]>> = { github: Object.keys(GithubAccountsSchema.shape),
-  gerrit: Object.keys(GerritAccountsSchema.shape), feishu: Object.keys(FeishuBotSchema.shape) }
+  gitlab: Object.keys(GitlabAccountsSchema.shape), feishu: Object.keys(FeishuBotSchema.shape) }
 /** The Source configuration keys setup reads under `forge`: the forge's Source's and Feishu's; another forge's Source has none. */
 export const setupFields = (forge: ForgeKind): Readonly<Record<string, readonly string[]>> =>
   ({ [forge]: ACCOUNT_FIELDS[forge]!, feishu: ACCOUNT_FIELDS.feishu! })
@@ -77,8 +79,8 @@ export interface Deployment extends Machine {
   repository: string
   /** The GitHub CLI and account, present only when the forge is GitHub. */
   github?: GithubAccount
-  /** The Gerrit server and account, present only when the forge is Gerrit. */
-  gerrit?: GerritAccount
+  /** The GitLab server, project and account, present only when the forge is GitLab. */
+  gitlab?: GitlabAccount
   feishu?: FeishuBot
 }
 export interface GithubAccount { cli: string; login: string; noreply: string }
@@ -87,13 +89,28 @@ export function githubOf(deployment: Pick<Deployment, 'github'>): GithubAccount 
   if (!deployment.github) throw new Error('This deployment\'s code host is not GitHub')
   return deployment.github
 }
-/** The deployment's Gerrit account; the Gerrit Source and the Gerrit forge run only when the forge is Gerrit. @throws otherwise */
-export function gerritOf(deployment: Pick<Deployment, 'gerrit'>): GerritAccount {
-  if (!deployment.gerrit) throw new Error('This deployment\'s code host is not Gerrit')
-  return deployment.gerrit
+/** The deployment's GitLab account; the GitLab Source and the GitLab forge run only when the forge is GitLab. @throws otherwise */
+export function gitlabOf(deployment: Pick<Deployment, 'gitlab'>): GitlabAccount {
+  if (!deployment.gitlab) throw new Error('This deployment\'s code host is not GitLab')
+  return deployment.gitlab
 }
-/** The Gerrit server, project and agent account; `netrc` and `ca` are file paths, never their contents. */
-export interface GerritAccount { url: string; project: string; netrc: string; ca?: string; id: number; username: string; email: string }
+/** The GitLab server, the agent's `glab` and account, and the project's numeric id. */
+export interface GitlabAccount {
+  /** Absolute path of the agent's glab (usually a wrapper that sets `GLAB_CONFIG_DIR`). */
+  cli: string
+  /** `https://host[:port]`, as configured. */
+  url: string
+  /** `new URL(url).host`, which `glab api --hostname` takes. */
+  host: string
+  /** The agent's username. */
+  login: string
+  /** The agent's user id. */
+  id: number
+  /** The agent's commit email. */
+  email: string
+  /** The project's numeric id, which every API path uses. */
+  projectId: number
+}
 export interface FeishuBot { cli: string; appId: string; brand: 'feishu' | 'lark'; botId: string; name: string }
 
 /** Resolve a command name or absolute path to an executable file, ignoring the worker shim directory. */
@@ -144,6 +161,48 @@ export async function resolveDeployment(machine: Machine, github: unknown, probe
   const noreply = `${agent.id}+${agent.login}@users.noreply.github.com`
   return { ...machine, repository, github: { cli, login: agent.login, noreply },
     account: { kind: 'github', login: agent.login, email: noreply, repository, web: 'https://github.com' } }
+}
+
+/** GitLab's Developer role, the lowest that may push branches. */
+const DEVELOPER = 30
+const GitlabUser = z.object({
+  id: z.number().int().positive(), username: z.string().regex(/^[A-Za-z0-9_.-]+$/),
+  email: z.string().nullish(), commit_email: z.string().nullish(), public_email: z.string().nullish(),
+})
+const Access = z.object({ access_level: z.number().int() }).nullish()
+const GitlabProject = z.object({
+  id: z.number().int().positive(), path_with_namespace: z.string().regex(/^[A-Za-z0-9_.-]+(\/[A-Za-z0-9_.-]+)+$/),
+  default_branch: z.string().nullish(), permissions: z.object({ project_access: Access, group_access: Access }).nullish(),
+})
+/**
+ * Verify the agent's glab account on the configured GitLab server and its Developer (push) access to the configured project.
+ * Every probe is `<cli> api --hostname <host> …`, so glab never falls back to another signed-in host.
+ */
+export async function resolveGitlab(machine: Machine, gitlab: unknown, probe: Probe, path = process.env.PATH ?? ''): Promise<Deployment> {
+  const accounts = GitlabAccountsSchema.parse(gitlab ?? {})
+  const { url, project } = accounts
+  if (!url) throw new SetupError('gitlabUrlUnset')
+  if (!project) throw new SetupError('gitlabProjectUnset')
+  if (!accounts.cli) throw new SetupError('gitlabCliUnset')
+  let cli: string
+  try { cli = executable(accounts.cli, path, workerBin(machine.stateDir)) } catch (error) { throw new SetupError('gitlabCliMissing', { output: reason(error) }) }
+  const { host, hostname } = new URL(url)
+  const api = (endpoint: string): Promise<string> => probe([cli, 'api', '--hostname', host, endpoint])
+  const text = await api('user').catch((error: unknown) => { throw new SetupError('gitlabCliSignedOut', { host, output: reason(error) }) })
+  const agent = parsed(GitlabUser, text)
+  if (!agent) throw new SetupError('gitlabNoAccount', { host })
+  const login = agent.username
+  // Use the canonical path returned by GitLab so a renamed or moved project matches what the API reports later.
+  const access = parsed(GitlabProject, await api(`projects/${encodeURIComponent(project)}`).catch((error: unknown) => {
+    throw new SetupError('gitlabProjectUnreadable', { account: login, project, output: reason(error) })
+  }))
+  if (!access) throw new SetupError('gitlabProjectUnreported', { project })
+  const repository = access.path_with_namespace
+  const level = Math.max(access.permissions?.project_access?.access_level ?? 0, access.permissions?.group_access?.access_level ?? 0)
+  if (level < DEVELOPER) throw new SetupError('gitlabProjectReadOnly', { account: login, project: repository })
+  const email = agent.commit_email || agent.email || `${agent.id}-${login}@users.noreply.${hostname}`
+  return { ...machine, repository, gitlab: { cli, url, host, login, id: agent.id, email, projectId: access.id },
+    account: { kind: 'gitlab', login, email, repository, web: url } }
 }
 
 const AuthStatus = z.object({ appId: z.string().regex(/^cli_[A-Za-z0-9]+$/), brand: z.enum(['feishu', 'lark']).default('feishu'), identities: z.object({ bot: z.object({ status: z.string() }) }) })

@@ -1,5 +1,5 @@
 /**
- * The forges a deployment may select, by kind. The GitHub forge is built in; the Gerrit forge adds itself when its module
+ * The forges a deployment may select, by kind. The GitHub forge is built in; the GitLab forge adds itself when its module
  * loads, which the main plugin entry imports. Generic code reaches the deployment's forge through `forgeOf(machine.forge)`.
  */
 import type { Machine, Probe } from '../deployment.ts'

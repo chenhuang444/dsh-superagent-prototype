@@ -5,10 +5,11 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SENSITIVE_ENV_PATTERN, type SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
-import { GIT_LOCATION, agentVariables, credentialHelper, runAsWorker, verifyDirectory, withoutDirectory, workerBin, workerGitConfig, writeEnvironment }
+import { GIT_LOCATION, PROTECTED_COMMANDS, agentVariables, credentialHelper, runAsWorker, verifyDirectory, withoutDirectory, workerBin, workerGitConfig, writeEnvironment }
   from '../src/infra/environment.ts'
 import { CliError } from '../src/infra/commands.ts'
-import { testDeployment } from './fixtures/deployment.ts'
+import { testDeployment, testGitlab, testGitlabDeployment } from './fixtures/deployment.ts'
+import { gitlabEnvironment } from '../src/forge/gitlab-environment.ts'
 import { gitEnv } from './fixtures/git.ts'
 
 // Git and shell subprocesses can exceed the 5s default timeout when the test suite runs in parallel.
@@ -93,6 +94,55 @@ describe('agent git configuration', () => {
     await expect(git('-C', 'repo', 'commit', '--allow-empty', '-q', '-m', 'without identity')).rejects.toMatchObject({ stderr: expect.stringContaining('no email was given') })
     await git('-C', 'repo', '-c', 'user.name=Alice', '-c', 'user.email=alice@example.com', 'commit', '--allow-empty', '-q', '-m', 'with identity')
     expect(await git('-C', 'repo', 'log', '-1', '--format=%an <%ae> / %cn <%ce>')).toBe('Alice <alice@example.com> / Alice <alice@example.com>')
+  })
+})
+
+describe('GitLab worker environment', () => {
+  const gitlab = (cli: string) => testGitlabDeployment({ stateDir: dir, gitlab: testGitlab({ cli, url: 'https://gitlab.example.com:8443', host: 'gitlab.example.com:8443' }), feishu: undefined })
+  it('runs the agent\'s glab on the configured host, refuses gh, and names glab in the blocked commands\' hint', async () => {
+    program(join(dir, 'real', 'glab'), 'echo "{\\"host\\":\\"$GITLAB_HOST\\",\\"config\\":\\"$GLAB_CONFIG_DIR\\",\\"args\\":\\"$*\\"}"')
+    const wrapper = program(join(dir, 'glab-agent'), `GLAB_CONFIG_DIR=${dir}/agent-config exec glab "$@"`)
+    await writeEnvironment(gitlab(wrapper), ['personal-glab'], gitlabEnvironment)
+    const bin = workerBin(dir)
+    expect(readdirSync(bin).sort()).toEqual(['gh', 'glab', 'lark-cli', 'personal-glab'])
+    const path = [bin, join(dir, 'real'), '/usr/bin', '/bin'].join(':')
+    const { stdout } = await exec('glab', ['api', 'user'], { env: { PATH: path }, timeout: 10_000 })
+    expect(JSON.parse(stdout)).toEqual({ host: 'gitlab.example.com:8443', config: `${dir}/agent-config`, args: 'api user' })
+    await expect(exec(join(bin, 'gh'), ['api', 'user'])).rejects.toMatchObject({ code: 1,
+      stderr: 'gh is unavailable: this installation\'s code host is GitLab; use glab, which acts as agent-bot.\n' })
+    await expect(exec(join(bin, 'personal-glab'), [])).rejects.toMatchObject({ code: 1, stderr: 'personal-glab is blocked in this installation; use glab, which acts as agent-bot.\n' })
+    // Blocking the commands workers need leaves glab working.
+    await writeEnvironment(gitlab(wrapper), ['glab', 'git', 'lark-cli'], gitlabEnvironment)
+    expect((await exec('glab', ['version'], { env: { PATH: path } })).stdout).toContain('"args":"version"')
+    expect(PROTECTED_COMMANDS).toEqual(['gh', 'git', 'lark-cli', 'glab'])
+  })
+  it('lets git push to the server over HTTPS with glab\'s credentials and reads them only from the agent\'s configuration', async () => {
+    const home = join(dir, 'home'); mkdirSync(home)
+    writeFileSync(join(home, '.gitconfig'), '[credential]\n\thelper = osxkeychain\n')
+    await writeEnvironment(gitlab('/opt/agent tools/glab'), [], gitlabEnvironment)
+    const env = workerEnv({ PATH: process.env.PATH, HOME: home, GITLAB_HOST: 'other.example.com', ...agentVariables(dir) })
+    for (const name of ['GITLAB_TOKEN', 'GITLAB_ACCESS_TOKEN', 'OAUTH_TOKEN', 'CI_JOB_TOKEN', 'GITLAB_HOST']) expect(agentVariables(dir)).toHaveProperty(name, undefined)
+    expect(env).not.toHaveProperty('GITLAB_HOST')
+    const git = async (...args: string[]): Promise<string> => (await exec('git', args, { cwd: dir, env })).stdout.trim()
+    await git('init', '-q', 'repo')
+    // The SSH forms name the host without its port; the HTTPS address keeps it.
+    for (const remote of ['git@gitlab.example.com:acme/widgets.git', 'ssh://git@gitlab.example.com/acme/widgets.git']) {
+      await git('-C', 'repo', 'remote', 'add', 'origin', remote)
+      expect(await git('-C', 'repo', 'remote', 'get-url', '--push', 'origin')).toBe('https://gitlab.example.com:8443/acme/widgets.git')
+      await git('-C', 'repo', 'remote', 'remove', 'origin')
+    }
+    expect(await git('config', '--show-origin', '--get-all', 'credential.https://gitlab.example.com:8443.helper'))
+      .toBe(`file:${workerGitConfig(dir)}\t${credentialHelper('/opt/agent tools/glab')}`)
+    expect(await git('config', '--get-all', 'credential.helper')).toBe('')
+    expect(readFileSync(workerGitConfig(dir), 'utf8')).not.toContain('github.com')
+  })
+  it('passes the check when git reads the credential lines, and names the address when it does not', async () => {
+    await writeEnvironment(gitlab('/opt/agent tools/glab'), [], gitlabEnvironment)
+    const signal = new AbortController().signal
+    await expect(gitlabEnvironment.verify(gitlab('/opt/agent tools/glab'), subprocess(workerGitConfig(dir)), signal)).resolves.toBeUndefined()
+    writeFileSync(join(dir, 'empty'), '')
+    await expect(gitlabEnvironment.verify(gitlab('/opt/agent tools/glab'), subprocess(join(dir, 'empty')), signal))
+      .rejects.toMatchObject({ code: 'gitlabGitTooOld', place: 'deployment', values: { url: 'https://gitlab.example.com:8443' } })
   })
 })
 

@@ -195,3 +195,13 @@ it('keeps what a model reads in a preview as written: code, angle brackets and l
   expect(triggerCard({ ...trigger,
     text }).preview).toBe('Fix `Map<string, T>` typing, see [the issue](https://github.com/acme/widgets/issues/7) **now**')
 })
+it('names a ticket\'s review by its Source: a GitHub PR as pr_number, a GitLab MR as mr_number, never a GitLab Issue', async () => {
+  const { reviewOf } = await import('../src/forge/review.ts')
+  const follows = (...threads: [string, boolean?][]) => ({ follows: threads.map(([thread, closed]) => ({ thread, ...closed ? { closed } : {} })) }) as Pick<Ticket, 'follows'>
+  expect(reviewOf(follows(['github:42']))).toEqual({ pr_number: 42 })
+  expect(reviewOf(follows(['gitlab:issue:12'], ['gitlab:mr:34']))).toEqual({ mr_number: 34 })
+  // The open review the ticket follows last, else the last one.
+  expect(reviewOf(follows(['gitlab:mr:34'], ['gitlab:mr:35', true]))).toEqual({ mr_number: 34 })
+  expect(reviewOf(follows(['gitlab:mr:34', true], ['gitlab:mr:35', true]))).toEqual({ mr_number: 35 })
+  for (const thread of ['gitlab:issue:12', 'gitlab:ci:main', 'gitlab:34', 'gitlab:mr:x', 'feishu:oc_1:om_1', 'gerrit:7']) expect(reviewOf(follows([thread]))).toEqual({})
+})

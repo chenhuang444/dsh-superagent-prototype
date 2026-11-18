@@ -56,7 +56,7 @@ export const RESOURCES: readonly { name: string; holds: string; executor?: true 
 /** The originals of each forge, which stand in the place of `github/…` under that forge. */
 const FORGE_RESOURCES: Readonly<Record<ForgeKind, { name: string; holds: string; executor: true }>> = {
   github: RESOURCES.at(-1)! as { name: string; holds: string; executor: true },
-  gerrit: { name: 'gerrit/…', holds: 'a Gerrit original, as the dsh-superagent-gerrit skill describes', executor: true },
+  gitlab: { name: 'gitlab/…', holds: 'a GitLab original, as the dsh-superagent-gitlab skill describes', executor: true },
 }
 /** The resources of a deployment whose code host is `forge`: the common ones, Feishu's and the forge's originals. */
 export const resourcesOf = (forge: ForgeKind = 'github') => [...RESOURCES.slice(0, -1), FORGE_RESOURCES[forge]]
@@ -109,7 +109,7 @@ const trigger = (host: ResourceHost, id: string, ticketId?: string): Trigger => 
   if (ticketId && (!ticket || !readable(host, ticket, found))) throw new UserError('notReached')
   return found
 }
-const SOURCE_NAMES: Readonly<Record<string, string>> = { feishu: 'Feishu', github: 'GitHub', gerrit: 'Gerrit' }
+const SOURCE_NAMES: Readonly<Record<string, string>> = { feishu: 'Feishu', github: 'GitHub', gitlab: 'GitLab' }
 /** Fetch and cache a source resource on offset 0, serving subsequent offsets from the session cache. */
 async function sourcePage(read: Read, source: string, fetch: () => Promise<unknown>) {
   const { host, resource, offset, sessionId } = read
@@ -216,7 +216,7 @@ const ROUTES: readonly Route[] = [
     const commands = read.host.commands.withSignal(read.signal)
     return sourcePage(read, 'feishu', () => feishuRead(commands, ref, read.resource, read.host.feishuPageSize()))
   }],
-  ...(['github', 'gerrit'] as const).map((kind): Route => [`${kind}/`, read => {
+  ...(['github', 'gitlab'] as const).map((kind): Route => [`${kind}/`, read => {
     if (read.host.forge !== kind) throw new Error('Unknown context resource')
     return sourcePage(read, kind, () => forgeOf(kind).resource.read(read.host.commands.withSignal(read.signal), read.resource))
   }]),

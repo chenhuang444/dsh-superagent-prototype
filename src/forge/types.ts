@@ -9,7 +9,7 @@ import type { Deployment, Machine, Probe } from '../deployment.ts'
 import type { Commands } from '../infra/commands.ts'
 import type { SourceContext } from '../sources/host.ts'
 
-export const FORGE_KINDS = ['github', 'gerrit'] as const
+export const FORGE_KINDS = ['github', 'gitlab'] as const
 export type ForgeKind = typeof FORGE_KINDS[number]
 
 /** The agent's account on the deployment's forge, as setup resolved it. */
@@ -19,15 +19,15 @@ export interface ForgeAccount {
   login: string
   /** The commit email the agent's commits use. */
   email: string
-  /** The repository (GitHub `owner/name`) or project (Gerrit) the deployment works on, in the forge's canonical form. */
+  /** The repository (GitHub `owner/name`) or project (GitLab `group/name`) the deployment works on, in the forge's canonical form. */
   repository: string
-  /** The forge's web address, such as `https://github.com` or a Gerrit server's URL. */
+  /** The forge's web address, such as `https://github.com` or a GitLab server's URL. */
   web: string
 }
-/** What setup resolves for a forge: its account, the repository, and the forge-specific details (`github` or `gerrit`). */
-export type ForgeDeployment = Pick<Deployment, 'account' | 'repository' | 'github' | 'gerrit'>
+/** What setup resolves for a forge: its account, the repository, and the forge-specific details (`github` or `gitlab`). */
+export type ForgeDeployment = Pick<Deployment, 'account' | 'repository' | 'github' | 'gitlab'>
 /** The parts of a deployment a forge's worker environment reads. */
-export type ForgeEnvironmentInput = Pick<Deployment, 'stateDir' | 'account' | 'github' | 'gerrit'>
+export type ForgeEnvironmentInput = Pick<Deployment, 'stateDir' | 'account' | 'github' | 'gitlab'>
 /** One worker command shim: its name under the shim directory, and the shell body the shim runs. */
 export interface Shim { name: string; body: string }
 
@@ -48,7 +48,7 @@ export interface ForgeEnvironment {
   verify(input: ForgeEnvironmentInput, subprocess: SubprocessRuntime, signal: AbortSignal): Promise<void>
 }
 
-/** A forge's review unit (GitHub PR, Gerrit change) as Executor tools, cards and notices see it. */
+/** A forge's review unit (GitHub PR, GitLab MR) as Executor tools, cards and notices see it. */
 export interface ForgeReview<R = unknown> {
   /** The `orchestrator_report` parameter that names the ticket's review, and its description for the tool schema. */
   param: { name: string; describe(account: ForgeAccount): string }

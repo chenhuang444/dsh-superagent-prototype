@@ -1,5 +1,5 @@
 /**
- * Process environment and CLI shims that bind git, gh, and lark-cli to the deployment's accounts and block disallowed commands.
+ * Process environment and CLI shims that bind git, gh or glab, and lark-cli to the deployment's accounts and block disallowed commands.
  * Variables read by workers avoid `KEY|PASSWORD|SECRET|TOKEN` in their names because DSH strips credential-shaped variables from child environments.
  * Provides default-path guardrails rather than an OS-level security boundary, as workers run under the operator's OS user.
  */
@@ -21,14 +21,14 @@ const BASE_COMMANDS: readonly string[] = ['git', 'lark-cli']
 export const workerCommands = (forge: Pick<ForgeEnvironment, 'commands'>): readonly string[] => [...forge.commands, ...BASE_COMMANDS]
 /**
  * The command names the blocked commands may never name, under any forge: GitHub's `gh` first, then git and `lark-cli`, then
- * Gerrit's `gerrit`. The settings schema does not know the deployment's forge, so it refuses all of them.
+ * GitLab's `glab`. The settings schema does not know the deployment's forge, so it refuses all of them.
  */
-export const PROTECTED_COMMANDS: readonly string[] = ['gh', ...BASE_COMMANDS, 'gerrit']
+export const PROTECTED_COMMANDS: readonly string[] = ['gh', ...BASE_COMMANDS, 'glab']
 export const workerBin = (stateDir: string): string => join(stateDir, 'worker-bin')
 export const workerGitConfig = (stateDir: string): string => join(stateDir, 'worker-gitconfig')
 export const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`
 export const gitQuote = (value: string): string => `"${value.replace(/[\\"]/g, char => `\\${char}`)}"`
-/** The git credential helper that answers with the GitHub CLI's account. */
+/** The git credential helper that answers with the forge CLI's account (`gh` and `glab` both provide `auth git-credential`). */
 export const credentialHelper = (cli: string): string => `!${shellQuote(cli)} auth git-credential`
 
 export function sameDirectory(a: string, b: string): boolean {
@@ -48,12 +48,14 @@ export const GIT_LOCATION: readonly string[] = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT
   'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_NAMESPACE']
 
 /**
- * Returns environment variable overrides that strip ambient GitHub tokens, interactive prompts, the repository the host's own
+ * Returns environment variable overrides that strip ambient GitHub and GitLab tokens and hosts, interactive prompts, the repository the host's own
  * environment may name, and operator git identity/config overrides.
  */
 export function agentVariables(stateDir: string): Record<string, string | undefined> {
   return {
     GH_TOKEN: undefined, GITHUB_TOKEN: undefined,
+    // glab reads these before its own configuration; the agent's glab must act only with the account its configuration holds.
+    GITLAB_TOKEN: undefined, GITLAB_ACCESS_TOKEN: undefined, OAUTH_TOKEN: undefined, CI_JOB_TOKEN: undefined, GITLAB_HOST: undefined,
     // A worker's git finds the repository from its directory, never from the host's environment.
     ...Object.fromEntries(GIT_LOCATION.map(name => [name, undefined])),
     GIT_CONFIG_GLOBAL: workerGitConfig(stateDir), GIT_CONFIG_NOSYSTEM: '1',
@@ -83,10 +85,10 @@ async function own(file: string, text: string, mode = 0o644): Promise<void> {
 
 /**
  * Atomically writes worker CLI shims and the isolated git configuration file into the state directory, refusing to overwrite foreign files.
- * Each shim strips the shim directory from PATH before exec so wrapper scripts resolving `gh` or `lark-cli` by name reach the real binary.
+ * Each shim strips the shim directory from PATH before exec so wrapper scripts resolving `gh`, `glab` or `lark-cli` by name reach the real binary.
  * The deployment's forge (`account.kind`) contributes its own shims, its git credential lines and the hint a blocked command prints.
  */
-export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' | 'account' | 'github' | 'gerrit' | 'feishu'>, blockedCommands: readonly string[],
+export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' | 'account' | 'github' | 'gitlab' | 'feishu'>, blockedCommands: readonly string[],
   forge?: ForgeEnvironment): Promise<void> {
   forge ??= (await import('../forge/index.ts')).forgeOf(deployment.account.kind).environment
   const { stateDir, feishu } = deployment
@@ -149,7 +151,7 @@ export async function runAsWorker(subprocess: SubprocessRuntime, argv: string[],
 }
 
 /** Verifies that worker git invocations resolve the deployment's forge credential helper. */
-export async function verifyEnvironment(deployment: Pick<Deployment, 'stateDir' | 'account' | 'github' | 'gerrit'>, subprocess: SubprocessRuntime, signal: AbortSignal,
+export async function verifyEnvironment(deployment: Pick<Deployment, 'stateDir' | 'account' | 'github' | 'gitlab'>, subprocess: SubprocessRuntime, signal: AbortSignal,
   forge?: ForgeEnvironment): Promise<void> {
   forge ??= (await import('../forge/index.ts')).forgeOf(deployment.account.kind).environment
   await forge.verify(deployment, subprocess, signal)

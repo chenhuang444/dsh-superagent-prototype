@@ -1,7 +1,7 @@
 /** Structured startup and configuration errors with the settings location where the operator can fix them. */
 import { fill } from './infra/text.ts'
 
-export type SetupPlace = 'deployment' | 'github' | 'gerrit' | 'feishu'
+export type SetupPlace = 'deployment' | 'github' | 'gitlab' | 'feishu'
 export const SETUP_PROBLEMS = {
   foreignFile: ['deployment', '{file} was not written by dsh-superagent; move it, or choose another state directory.'],
   gitTooOld: ['deployment', 'git does not read the github.com credential configuration dsh-superagent writes; dsh-superagent needs git 2.32 or later.'],
@@ -14,6 +14,16 @@ export const SETUP_PROBLEMS = {
   repositoryUnreadable: ['github', '@{account} cannot read {repository}.'],
   repositoryUnreported: ['github', 'The agent GitHub CLI did not return {repository}.'],
   repositoryReadOnly: ['github', '@{account} cannot push to {repository}.'],
+  gitlabUrlUnset: ['gitlab', 'The GitLab Source names no GitLab address.'],
+  gitlabProjectUnset: ['gitlab', 'The GitLab Source names no project.'],
+  gitlabCliUnset: ['gitlab', 'The agent glab is not set.'],
+  gitlabCliMissing: ['gitlab', 'The agent glab was not found.'],
+  gitlabCliSignedOut: ['gitlab', 'The agent glab cannot read its account on {host}; sign it in with glab auth login --hostname {host}.'],
+  gitlabNoAccount: ['gitlab', 'The agent glab did not report a GitLab account on {host}.'],
+  gitlabProjectUnreadable: ['gitlab', '@{account} cannot read {project}.'],
+  gitlabProjectUnreported: ['gitlab', 'The agent glab did not return {project}.'],
+  gitlabProjectReadOnly: ['gitlab', '@{account} cannot push to {project}; it needs the Developer role or higher.'],
+  gitlabGitTooOld: ['deployment', 'git does not read the {url} credential configuration dsh-superagent writes; dsh-superagent needs git 2.32 or later.'],
   feishuCliFailed: ['feishu', 'The bot lark-cli does not work.'],
   feishuNoApp: ['feishu', 'auth status of the bot lark-cli did not report the app.'],
   feishuBotNotReady: ['feishu', 'The bot identity of app {app} is {status}; configure the app secret with lark-cli.'],

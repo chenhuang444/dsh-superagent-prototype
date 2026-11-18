@@ -1,6 +1,6 @@
 /** Default deployment and machine fixtures for tests. */
 import type { Volatile } from '@deepseek-ai/cordis'
-import type { Deployment, GerritAccount, Machine } from '../../src/deployment.ts'
+import type { Deployment, GitlabAccount, Machine } from '../../src/deployment.ts'
 
 /** Mutable Volatile reference for simulating live configuration updates. */
 export const reference = <T>(value: T): Volatile<T> & { set(next: T): void } => {
@@ -22,17 +22,19 @@ export const testDeployment = (overrides: Partial<Deployment> = {}): Deployment 
     ...overrides,
   }
 }
-export const testGerrit = (overrides: Partial<GerritAccount> = {}): GerritAccount => ({
-  url: 'https://gerrit.example.com', project: 'widgets', netrc: '/tmp/dsh-superagent-test/netrc', id: 1000042, username: 'agent-bot',
-  email: 'agent-bot@example.com', ...overrides,
+/** The agent's account on `https://gitlab.example.com`, with project `acme/widgets` (id 42). */
+export const testGitlab = (overrides: Partial<GitlabAccount> = {}): GitlabAccount => ({
+  cli: '/bin/false', url: 'https://gitlab.example.com', host: 'gitlab.example.com', login: 'agent-bot', id: 7, email: 'agent-bot@example.com',
+  projectId: 42, ...overrides,
 })
-/** A Gerrit deployment of project `widgets` on `https://gerrit.example.com`. */
-export const testGerritDeployment = (overrides: Partial<Deployment> & { gerrit?: GerritAccount } = {}): Deployment => {
-  const gerrit = overrides.gerrit ?? testGerrit()
+/** A GitLab deployment of project `acme/widgets` on `https://gitlab.example.com`. */
+export const testGitlabDeployment = (overrides: Partial<Deployment> & { gitlab?: GitlabAccount } = {}): Deployment => {
+  const gitlab = overrides.gitlab ?? testGitlab()
   const { github: _github, ...base } = testDeployment()
+  const repository = overrides.repository ?? 'acme/widgets'
   return {
-    ...base, forge: 'gerrit', repository: gerrit.project, gerrit,
-    account: { kind: 'gerrit', login: gerrit.username, email: gerrit.email, repository: gerrit.project, web: gerrit.url },
+    ...base, forge: 'gitlab', repository, gitlab,
+    account: { kind: 'gitlab', login: gitlab.login, email: gitlab.email, repository, web: gitlab.url },
     ...overrides,
   }
 }

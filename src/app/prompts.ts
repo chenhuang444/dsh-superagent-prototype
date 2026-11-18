@@ -20,15 +20,15 @@ export const SKILL_NAME = /^[a-z][a-z0-9-]*$/
 /** Prefix prepended to skill names when registering them in DSH Sessions. */
 export const SKILL_PREFIX = 'dsh-superagent-'
 /** Every built-in skill's name, under any forge; a team skill may take none of them. */
-const BUILT_IN_SKILLS: readonly string[] = ['feishu', 'github', 'gerrit']
+const BUILT_IN_SKILLS: readonly string[] = ['feishu', 'github', 'gitlab']
 const SkillNameSchema = z.string().regex(SKILL_NAME).refine(name => !BUILT_IN_SKILLS.includes(name), 'This name belongs to a built-in skill')
 /** The built-in parts a team may override, by key: both roles' parts, the Source skills, and the generated parts' templates. */
 const PART_KEYS = ['runtime/shared', 'runtime/orchestrator', 'runtime/worker', 'runtime/subscriptions', 'runtime/replies',
   'runtime/dispatch', 'runtime/work', 'runtime/admission', 'runtime/handoff/orchestrator', 'runtime/handoff/worker', 'runtime/environment',
-  'runtime/policy', 'runtime/policy/none', 'skill/feishu', 'skill/github', 'skill/gerrit'] as const
+  'runtime/policy', 'runtime/policy/none', 'skill/feishu', 'skill/github', 'skill/gitlab'] as const
 export type PartKey = typeof PART_KEYS[number]
 /** The skill parts of the forges a deployment does not use, which its built-in parts leave out. */
-const otherForgeSkills = (forge: ForgeKind): PartKey[] => (['github', 'gerrit'] as const).filter(kind => kind !== forge).map(kind => `skill/${kind}` as const)
+const otherForgeSkills = (forge: ForgeKind): PartKey[] => (['github', 'gitlab'] as const).filter(kind => kind !== forge).map(kind => `skill/${kind}` as const)
 /** A team's text for a built-in part, and `base`, the key of the built-in text it was edited from. */
 const OverrideSchema = z.object({ text: z.string(),
   base: z.string().optional().describe('Key of the built-in text it was edited from; copy as read, or omit.') }).strict()
@@ -84,7 +84,7 @@ function partsOf(forge: ForgeKind): Partial<Record<PartKey, BuiltInPart>> {
     placeholders: ['{version}', '{mode}'] },
   'skill/feishu': { roles: BOTH, text: `${sourceSkills.feishu}\n\n## CLI usage\n${cliNotes}` },
   'skill/github': { roles: BOTH, text: `${sourceSkills.github}\n\n## CLI usage\n${cliNotes}` },
-  'skill/gerrit': { roles: BOTH, text: `${sourceSkills.gerrit}\n\n## CLI usage\n${cliNotes}` },
+  'skill/gitlab': { roles: BOTH, text: `${sourceSkills.gitlab}\n\n## CLI usage\n${cliNotes}` },
   }
 }
 /** The key of a built-in text, which an override's `base` records. */

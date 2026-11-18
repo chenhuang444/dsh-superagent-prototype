@@ -54,9 +54,9 @@ describe('configuration schema', () => {
   })
   it('selects one code host, GitHub when the configuration names none, and refuses any other', () => {
     expect(machineOf(Config({ stateDir: join(dir, 'state') })).forge).toBe('github')
-    expect(machineOf(Config({ stateDir: join(dir, 'state'), forge: 'gerrit' })).forge).toBe('gerrit')
-    expect(() => Config({ stateDir: join(dir, 'state'), forge: 'gitlab' as never })).toThrow()
-    expect(() => machineOf({ ...Config({ stateDir: join(dir, 'state') }), forge: 'gitlab' } as never)).toThrow('forge takes only github or gerrit')
+    expect(machineOf(Config({ stateDir: join(dir, 'state'), forge: 'gitlab' })).forge).toBe('gitlab')
+    expect(() => Config({ stateDir: join(dir, 'state'), forge: 'gitea' as never })).toThrow()
+    expect(() => machineOf({ ...Config({ stateDir: join(dir, 'state') }), forge: 'gitea' } as never)).toThrow('forge takes only github or gitlab')
   })
   it('names keys the configuration does not define, and where the values of older keys live now', () => {
     const raw = minimal({ repository: 'acme/widgets', repositoryPath: '/srv/widgets', blockedCommands: [], author: { name: 'Alice' }, extra: 1 })
@@ -68,13 +68,13 @@ describe('setup fields', () => {
   const settings = (sources: Record<string, Record<string, unknown>>) =>
     SettingsSchema.parse({ sources: Object.fromEntries(Object.entries(sources).map(([id, config]) => [id, { enabled: true, config }])) })
   it('restart only for the fields of the deployment\'s forge and of Feishu', () => {
-    const before = settings({ github: { repository: 'acme/widgets', cli: 'gh' }, gerrit: { url: 'https://gerrit.example.com', project: 'widgets' }, feishu: { cli: 'lark' } })
-    const github = settings({ github: { repository: 'acme/other', cli: 'gh' }, gerrit: { url: 'https://gerrit.example.com', project: 'widgets' }, feishu: { cli: 'lark' } })
-    const gerrit = settings({ github: { repository: 'acme/widgets', cli: 'gh' }, gerrit: { url: 'https://gerrit.example.com', project: 'other' }, feishu: { cli: 'lark' } })
-    const feishu = settings({ github: { repository: 'acme/widgets', cli: 'gh' }, gerrit: { url: 'https://gerrit.example.com', project: 'widgets' }, feishu: { cli: 'lark2' } })
-    expect([setupChanged(before, github, 'github'), setupChanged(before, gerrit, 'github'), setupChanged(before, feishu, 'github')]).toEqual([true, false, true])
-    expect([setupChanged(before, github, 'gerrit'), setupChanged(before, gerrit, 'gerrit'), setupChanged(before, feishu, 'gerrit')]).toEqual([false, true, true])
-    expect(setupFields('gerrit')).toEqual({ gerrit: ['url', 'project', 'netrc', 'ca'], feishu: ['cli'] })
+    const before = settings({ github: { repository: 'acme/widgets', cli: 'gh' }, gitlab: { url: 'https://gitlab.example.com', project: 'acme/widgets' }, feishu: { cli: 'lark' } })
+    const github = settings({ github: { repository: 'acme/other', cli: 'gh' }, gitlab: { url: 'https://gitlab.example.com', project: 'acme/widgets' }, feishu: { cli: 'lark' } })
+    const gitlab = settings({ github: { repository: 'acme/widgets', cli: 'gh' }, gitlab: { url: 'https://gitlab.example.com', project: 'acme/other' }, feishu: { cli: 'lark' } })
+    const feishu = settings({ github: { repository: 'acme/widgets', cli: 'gh' }, gitlab: { url: 'https://gitlab.example.com', project: 'acme/widgets' }, feishu: { cli: 'lark2' } })
+    expect([setupChanged(before, github, 'github'), setupChanged(before, gitlab, 'github'), setupChanged(before, feishu, 'github')]).toEqual([true, false, true])
+    expect([setupChanged(before, github, 'gitlab'), setupChanged(before, gitlab, 'gitlab'), setupChanged(before, feishu, 'gitlab')]).toEqual([false, true, true])
+    expect(setupFields('gitlab')).toEqual({ gitlab: ['url', 'project', 'cli'], feishu: ['cli'] })
     expect(SETUP_FIELDS).toEqual({ github: ['repository', 'cli'], feishu: ['cli'] })
   })
 })

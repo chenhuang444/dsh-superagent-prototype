@@ -8,7 +8,7 @@ import { githubChannel } from '../src/sources/github-trigger.ts'
 import { SourceRegistry } from '../src/sources/registry.ts'
 import { SettingsSchema } from '../src/policy.ts'
 import { key, type OutboundMessage } from '../src/core/index.ts'
-import { testDeployment } from './fixtures/deployment.ts'
+import { testDeployment, testGitlab, testGitlabDeployment } from './fixtures/deployment.ts'
 const sources = new SourceRegistry(() => SettingsSchema.parse({}))
 sources.register(feishuKind); sources.register(githubKind)
 const send = (commands: Commands, message: OutboundMessage) => sources.send(message, commands)
@@ -158,6 +158,58 @@ describe('GitHub calls', () => {
     expect(tally).toEqual({ skipped: 1 })
     run.mockResolvedValue('{"message":"not a list"}')
     await expect(value.pages(z.looseObject({ id: z.number() }), 'issues/12/comments')).rejects.toThrow()
+  })
+})
+describe('GitLab calls', () => {
+  const gitlab = testGitlabDeployment({ gitlab: testGitlab({ cli: '/path/agent-glab' }) })
+  const commands = () => new Commands(() => gitlab, {}, new AbortController().signal)
+  const api = (path: string, ...flags: string[]) => ['api', '--hostname', 'gitlab.example.com', path, ...flags]
+  it('go only to paths inside the configured project, on the configured host, and validate what GitLab answers', async () => {
+    const value = commands()
+    const run = vi.spyOn(value, 'run').mockResolvedValue('{"iid":12,"title":"Login fails","extra":true}')
+    expect(await value.gitlab(z.looseObject({ iid: z.number() }), 'issues/12', '--method', 'GET')).toEqual({ iid: 12, title: 'Login fails', extra: true })
+    expect(run).toHaveBeenLastCalledWith('/path/agent-glab', api('projects/42/issues/12', '--method', 'GET'))
+    await expect(value.gitlab(z.looseObject({ iid: z.string() }), 'issues/12')).rejects.toThrow()
+    for (const path of ['../other/issues', 'issues/../../x', '/projects/7', 'https://gitlab.example.com/api/v4/projects/7', 'issues?x=1/..']) {
+      await expect(value.gitlab(z.unknown(), path)).rejects.toThrow('restricted to the configured project')
+      await expect(value.gitlab(path)).rejects.toThrow('restricted to the configured project')
+      await expect(value.gitlabPages(z.unknown(), path)).rejects.toThrow('restricted to the configured project')
+    }
+    expect(run).toHaveBeenCalledTimes(2)
+    // An empty path names the project itself; a query string stays on the path.
+    await value.gitlab(z.unknown(), '')
+    expect(run).toHaveBeenLastCalledWith('/path/agent-glab', api('projects/42'))
+    run.mockResolvedValue('raw file')
+    expect(await value.gitlab('repository/files/README.md/raw?ref=main')).toBe('raw file')
+    expect(run).toHaveBeenLastCalledWith('/path/agent-glab', api('projects/42/repository/files/README.md/raw?ref=main'))
+    await expect(value.glab(['api', 'user'])).rejects.toThrow()
+    run.mockResolvedValue('{"username":"agent-bot"}')
+    expect(await value.glab(['api', 'user'])).toEqual({ username: 'agent-bot' })
+  })
+  it('read every page of a list as one JSON value per line, and skip and count an item that does not validate', async () => {
+    const value = commands()
+    const run = vi.spyOn(value, 'run').mockResolvedValue('{"id":1}\n{"id":2}\n\n')
+    expect(await value.gitlabPages(z.looseObject({ id: z.number() }), 'issues/12/notes?per_page=100')).toEqual([{ id: 1 }, { id: 2 }])
+    expect(run).toHaveBeenLastCalledWith('/path/agent-glab', api('projects/42/issues/12/notes?per_page=100', '--paginate', '--output', 'ndjson'))
+    run.mockResolvedValue('{"id":1}\n{"id":"two"}\n')
+    const tally = { skipped: 0 }
+    expect(await value.gitlabPages(z.looseObject({ id: z.number() }), 'issues/12/notes', tally)).toEqual([{ id: 1 }])
+    expect(tally).toEqual({ skipped: 1 })
+    run.mockResolvedValue('')
+    expect(await value.gitlabPages(z.unknown(), 'issues')).toEqual([])
+  })
+  it('refuse GitLab calls on a GitHub deployment and GitHub calls on a GitLab one', async () => {
+    await expect(new Commands(() => deployment, {}, new AbortController().signal).gitlab(z.unknown(), 'issues')).rejects.toThrow('not GitLab')
+    await expect(commands().api(z.unknown(), 'issues')).rejects.toThrow('not GitHub')
+  })
+  it('read the HTTP status of a glab failure', () => {
+    expect(commandError({ stderr: 'glab: 404 Not Found (HTTP 404)\n', code: 1 })).toMatchObject({ code: 404, exitCode: 1 })
+    expect(commandError({ stderr: 'glab: HTTP 403', code: 1 })).toMatchObject({ message: 'glab: HTTP 403', code: 403 })
+  })
+  it('run glab without update checks or prompts', async () => {
+    const output = await commands().run('env', [])
+    expect(output).toContain('GLAB_CHECK_UPDATE=false')
+    expect(output).toContain('NO_PROMPT=1')
   })
 })
 it('says how to add the bot to a chat when Feishu answers that it is not a member, and keeps the code', async () => {

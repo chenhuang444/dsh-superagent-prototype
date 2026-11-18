@@ -249,7 +249,7 @@ Each model request binds the Session to the current prompt revision. The revisio
 | `src/app/tools/main.ts`, `src/app/tools/executor.ts` | Tool arguments of the main Session and the Executor Sessions into calls of the core classes, and their results into cards |
 | `src/app/http.ts`, `src/app/views/`, `src/app/api.ts` | HTTP requests into calls, and Store reads into the panel's views; `api.ts` types every route for the panel |
 | `src/app/resources.ts`, `src/app/links.ts`, `src/app/cards.ts` | Resource names into reads, source messages into links, records into compact cards for models |
-| `src/sources/github*.ts`, `src/sources/feishu*.ts`, `src/sources/poll.ts` | GitHub and Feishu payloads into Triggers and Thread facts, and messages into CLI calls |
+| `src/sources/github*.ts`, `src/sources/gitlab*.ts`, `src/sources/feishu*.ts`, `src/sources/poll.ts` | GitHub, GitLab and Feishu payloads into Triggers and Thread facts, and messages into CLI calls |
 | `src/deployment.ts`, `src/setup.ts`, `src/infra/` | Setup probes and problems, CLI transport, the agent's process environment |
 
 ## Dependency rules
@@ -272,18 +272,34 @@ Each model request binds the Session to the current prompt revision. The revisio
 - **Requests and facts.** A method that asks for something is named by an imperative verb and its object, such as `stopTicket` or `bindThread`, and may be refused; a method that records what an adapter did is named in the past tense, such as `assignmentStarted` or `deliveryFailed`. Each host receives the Engine as the role type it needs.
 - **Typed fields, and Source data under the Source.** The code reads typed fields of Tickets and Mandates. A Source keeps nothing on a Ticket: which of its Threads a Ticket follows is the Ticket's `follows`, and what it keeps about a Trigger or a Thread is in their `meta`.
 - **Fixed refusals.** A refusal a person or an agent can cause is a `UserError(code, values)` from `USER_ERRORS` in `src/core/errors.ts`. The management API answers a `missing` code with 404 and the others with 400, and the panel words each code in its language. Setup problems are `SetupError` codes (`src/setup.ts`) and fixed health texts `HealthCode`s (`src/sources/host.ts`), worded the same way.
-### Source-specific dependencies
+### Forges
 
-Some generic modules still refer directly to GitHub or Feishu:
+A deployment works on one code host, its forge (`Machine.forge`: `github`, the default, or `gitlab`). `Forge` (`src/forge/types.ts`) holds what the parts of dsh-superagent that are not a Source need from it, and generic code reaches it through `forgeOf(machine.forge)` (`src/forge/index.ts`), never by naming a host:
+
+| Need | Forge member | GitHub | GitLab |
+| --- | --- | --- | --- |
+| Setup of the agent's account and the repository | `resolve` | `resolveDeployment`: the `gh` account and push access | `resolveGitlab`: the address, the `glab` account and commit email, the project and the Developer role |
+| Worker shims, git credentials and their check | `environment` | `gh`, github.com's credential helper | `glab` with `GITLAB_HOST`, `glab auth git-credential` for the GitLab address alone, a `gh` that refuses |
+| The Executor's report of its review | `review.param`, `read`, `claim` | `pr_number`, `claimPull` | `mr_number`, `claimMr` |
+| A ticket card's review, the end notice | `review.of`, `endNotices` | `pullOf`, `pullEndNotices` | `mrOf`, `mrEndNotices` |
+| Repository reads of assessments | `readPath` | the contents API | `repository/files` and `repository/tree` |
+| Originals of `orchestrator_read` | `resource` | `github/…` | `gitlab/…` |
+| The built-in skill | `skill` | `dsh-superagent-github` | `dsh-superagent-gitlab` |
+
+`Deployment.account` is the forge account generic code reads (login, email, repository, web address); `Deployment.github` and `Deployment.gitlab` hold the forge's own details, and exactly one is set. `githubOf` and `gitlabOf` read them and throw on a deployment of the other forge, so a GitHub-only path cannot run on GitLab unnoticed. The GitLab forge registers itself with `registerForge` when `src/forge/gitlab.ts` loads, which `src/index.ts` imports.
+
+The built-in texts follow the forge (`src/app/context.ts`): `prompts/<name>.md` is GitHub's text and every forge's default, and `prompts/forge/<forge>/<name>.md` replaces it under that forge. The Runtime selects the forge's texts at start (`useForgeTexts`). Built-in parts keep their keys, but only the forge's skill part exists: `skill/github` or `skill/gitlab`. `tests/github-baseline.spec.ts` holds a GitHub deployment's texts, tools and variables byte for byte, and `tests/gitlab-prompts.spec.ts` that GitLab's name no GitHub workflow.
+
+The other forge's Source, if installed, reports `notForge` and polls nothing, its fields are no setup fields (`setupFields(forge)`), and its execution variables are left out.
+
+Some generic modules still refer to a Source by name:
 
 - Outbox applies the Feishu chat word limit.
 - `src/app/links.ts` resolves Feishu message links and `repliedTo`. It and Runtime read settings with `feishuSettings`.
-- `src/app/resources.ts` reads the `feishu/` and `github/` originals; `src/app/cards.ts` uses `pullOf` for Ticket cards.
-- Runtime sends `pullEndNotices` for merged or closed Tickets.
-- Executor tools bind reported pull requests with `readPull` and `claimPull`, using the GitHub context exposed by Runtime.
-- MasterAssessor reads repository files with `readRepositoryPath`.
-- Sessions and Prompts register built-in skills only for GitHub and Feishu. Migration converts their schema-10 records.
-- Setup probes only GitHub and Feishu account fields (`SETUP_FIELDS`). Only those Sources receive account setup problems through `SourceContext.problem`.
+- `src/app/resources.ts` reads the `feishu/` originals, and the forge's.
+- `src/forge/review.ts` knows each forge Source's Thread ids of reviews (`REVIEW_KEYS`).
+- Sessions and Prompts register Feishu's built-in skill and the forge's. Migration converts schema-10 records, which were GitHub's.
+- Setup probes only the forge's and Feishu's account fields. Only those Sources receive account setup problems through `SourceContext.problem`.
 
 
 ## Modules
@@ -291,7 +307,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | Path | Responsibility |
 | --- | --- |
 | `src/index.ts` | The main plugin entry: reads the machine settings, starts the Runtime, and gives it the restart that a save of a Source's account uses |
-| `src/deployment.ts` | The plugin `Config` and `Machine`; `resolveDeployment` and `resolveFeishuBot` read the repository and the accounts from the Source settings, each CLI run as Executor shells run it; `SETUP_FIELDS` lists the Source fields setup reads. The code names no person, account or organization |
+| `src/deployment.ts` | The plugin `Config` and `Machine`; `resolveDeployment`, `resolveGitlab` and `resolveFeishuBot` read the repository and the accounts from the Source settings, each CLI run as Executor shells run it; `SETUP_FIELDS` lists the Source fields setup reads. The code names no person, account or organization |
 | `src/setup.ts` | Setup problems: `SetupError`, with a code, the place that fixes it and the English text the log, the main Session and the panel share |
 | `src/policy.ts` | The Policy: the settings schemas by block, the Policy version, the gate and Mandate revalidation |
 | `src/admission.ts` | The admission table's values, each cell's options and defaults, shared with the panel |
@@ -300,8 +316,10 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/navigation.ts` | Opens a DeepSeek Harness Session from the panel once the host's catalog lists it |
 | `src/forge/types.ts` | The `Forge` protocol: a code host's account, setup, worker environment, review rules, repository reads, originals and skill |
 | `src/forge/index.ts` | The forges by kind, `forgeOf` and `resolveForge`, the setup of the deployment's one forge (`Machine.forge`) |
-| `src/forge/review.ts` | `reviewOf`: the review a ticket card names, `pr_number` or `change_number`, from the Threads the ticket follows |
+| `src/forge/review.ts` | `reviewOf`: the review a ticket card names, `pr_number` or `mr_number`, from the Threads the ticket follows |
 | `src/forge/github.ts`, `github-environment.ts` | The GitHub forge: pull requests as reviews, the `github/` originals, and the `gh` shim and github.com credentials of the worker environment |
+| `src/forge/gitlab.ts` | The GitLab forge, which registers itself: merge requests as reviews (`mr_number`), the `gitlab/` originals and repository reads |
+| `src/forge/gitlab-environment.ts` | The GitLab worker environment: the `glab` shim, which sets `GITLAB_HOST`, the blocked-command hint, git's credential helper and SSH rewrites for the GitLab address alone, and their check |
 | `src/core/model.ts` | The domain types, among them the typed Ticket and `MandateBasis`, with `threadKey`, `ticketOutcome`, `reached`, `followupOwners`, `settled`, `waitsForPerson`, `liveTicket`, `runningAssignment`, `latestAssignment` and `latestReport` |
 | `src/core/ports.ts` | The ports: `Repositories`, `Policy`, `SourceScope`, `Assessor`, `Executor`, `Outbox`, and the domain events |
 | `src/core/engine.ts` | The Engine, the core's entry point, and the role interfaces `EngineForSources`, `EngineForMainSession`, `EngineForPeople`, `EngineForSettings` and `EngineForExecutor` |
@@ -357,7 +375,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/views/overview.ts` | The overview: Tickets that need a person, problems, the last day's flow and the Executor's load |
 | `src/executor/dsh.ts` | The DshExecutor, `WorkerSlots`, `ticketExecution`, `inputMessage` and `mandateInstructions` |
 | `src/executor/background.ts` | A worker's background work in DeepSeek Harness, the shell jobs its Session owns (`ctx.jobs`) and its subagents (`ctx.subagents`): `runningJobs`, `untilQuiet`, `killJobs`, `collectJobs`, `stopSubagents`, `stopBackground`, `until`, and `cancelled`, the workers whose turn a stop of their subagents cancelled |
-| `src/infra/commands.ts` | `Commands`, the CLI transport: `run`; `api` and `pages`, limited to the configured repository and validated; `lark` as the bot; `git`. `CliError` carries the code a command's output reports, such as a GitHub HTTP status, and a command that prints nothing fails with how it ended, never with its arguments; `validItems` skips and counts the malformed items of a list |
+| `src/infra/commands.ts` | `Commands`, the CLI transport: `run`; `api` and `pages`, limited to the configured repository and validated; `glab`, `gitlab` and `gitlabPages`, limited to the configured GitLab project the same way; `lark` as the bot; `git`. `CliError` carries the code a command's output reports, such as a GitHub HTTP status, and a command that prints nothing fails with how it ended, never with its arguments; `validItems` skips and counts the malformed items of a list |
 | `src/infra/environment.ts` | The agent's process environment: command shims, the git configuration and credential helper, `runAsWorker`, and the checks of the environment and of a Ticket's directory |
 | `src/infra/paths.ts` | The package's root, where packaged files are |
 | `src/infra/text.ts` | Word counts and the chat message limit, `fill` and `sameName` |
@@ -365,12 +383,17 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/sources/kind.ts` | The `SourceKind` protocol |
 | `src/sources/registry.ts` | `SourceRegistry` |
 | `src/sources/host.ts` | `SourceHost`, `SourceContext`, `Health`, `health` and the fixed health texts |
-| `src/sources/poll.ts` | What GitHub and Feishu polling share: `POLL_HORIZON_MS`, `polled`, `cursorAt`, and `pollThreads`, which keeps a failure on its Thread as `pollError` |
+| `src/sources/poll.ts` | What GitHub, GitLab and Feishu polling share: `POLL_HORIZON_MS`, `polled`, `cursorAt`, and `pollThreads`, which keeps a failure on its Thread as `pollError` |
 | `src/sources/github.ts` | The GitHub kind and plugin entry, exported as `./github-watch`: a poll round of notifications, the pull requests of open Tickets with their CI, and subscribed Threads |
 | `src/sources/github-trigger.ts` | GitHub comments, reviews, Issue bodies and CI changes as Triggers, and GitHub addresses |
 | `src/sources/github-pull.ts` | The pull request rules: which pull requests a Ticket follows (`claimPull`, `observePull`), the closes it reports to the Engine, and `pullEndNotices`, the chat notice of a Ticket that ended merged or closed |
 | `src/sources/github-channel.ts` | The GitHub Channel: comments and review thread replies, `sent` or `gone` |
 | `src/sources/github-read.ts` | CI snapshots, repository reads, the `github/` resources, and `githubThreadContext`: an Issue's or pull request's conversation by page |
+| `src/sources/gitlab.ts` | The GitLab kind and plugin entry, exported as `./gitlab-watch`: its fields, scope, Policy rows, execution variables, facts and search, and a poll round of the project's updated Issues and merge requests with their discussions, subscribed Threads, and the pipelines of merge requests and the default branch |
+| `src/sources/gitlab-trigger.ts` | GitLab Issues, merge requests, notes, review decisions and pipeline changes as Triggers; mentions and GitLab addresses |
+| `src/sources/gitlab-mr.ts` | The merge request rules: which merge requests a Ticket follows (`claimMr`, `observeMr`), the closes it reports to the Engine, and `mrEndNotices`, the chat notice of a Ticket that ended merged or closed |
+| `src/sources/gitlab-channel.ts` | The GitLab Channel: notes on Issues and merge requests and replies in their discussions, kept once by a hidden marker, `sent` or `gone` |
+| `src/sources/gitlab-read.ts` | Reads of Issues, merge requests, notes, discussions and pipelines, repository paths, the `gitlab/` resources, and the Thread context of assessments |
 | `src/sources/feishu.ts` | The Feishu kind and plugin entry, exported as `./feishu-watch` |
 | `src/sources/feishu-trigger.ts` | Feishu messages as Triggers, by one rule for live events, history pages and topic pages |
 | `src/sources/feishu-loops.ts` | The Feishu loops: the event consumer, history recovery, chat names and polling of subscribed topics |
@@ -401,7 +424,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/client/locales.ts` | All copy in both languages, and the glossary of [001 Domain model](001-domain.md) |
 | `src/client/client.css`, `css.d.ts` | The panel's stylesheet, loaded as text |
 
-`src/sources/github.ts` and `src/sources/feishu.ts` are also the entries of the two Source plugins, built by `tsdown.config.ts` and exported in `package.json` as `./github-watch` and `./feishu-watch`. The bundle's `cordis.patch.yml` inserts the three plugins, with Feishu disabled.
+`src/sources/github.ts`, `src/sources/gitlab.ts` and `src/sources/feishu.ts` are also the entries of the three Source plugins, built by `tsdown.config.ts` and exported in `package.json` as `./github-watch`, `./gitlab-watch` and `./feishu-watch`. The bundle's `cordis.patch.yml` inserts the four plugins, with GitLab and Feishu disabled.
 
 ## Tests
 
@@ -412,7 +435,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/policy.spec.ts` | Source scope, the gate, the admission table, Mandate revalidation, the Policy version, settings migrations and assessment outcomes |
 | `tests/registry.spec.ts` | `SourceRegistry`: instances, validation, Policy parts, Channels and Thread context |
 | `tests/sources.spec.ts` | The Feishu and GitHub Sources on a `SourceContext`: translation, polls and read positions, the pull request rules, health |
-| `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
+| `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub and project-scoped GitLab calls |
 | `tests/feishu-read.spec.ts`, `tests/github-read.spec.ts` | Feishu and GitHub reads |
 | `tests/admission-context.spec.ts`, `tests/feishu-image.spec.ts` | The Thread window of assessments, and Feishu image reads |
 | `tests/assessment.spec.ts` | What the MasterAssessor keeps per Eval, and when it lets go |
@@ -439,6 +462,11 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/prompts.spec.ts` | Prompt validation, assembly and versions |
 | `tests/cards.spec.ts` | The rules the built-in text must state, file by file |
 | `tests/model-surface.spec.ts` | Everything models read: tools, prompts, skills and inputs, checked against the tool schemas, the execution environment and the glossary, within a size budget per role |
+| `tests/gitlab-prompts.spec.ts` | A GitLab deployment's built-in texts: each GitLab file replaces a shared one, and nothing GitLab Sessions read names the GitHub workflow |
+| `tests/gitlab-setup.spec.ts` | `resolveGitlab`: the agent's glab account, project access and every GitLab setup problem |
+| `tests/gitlab-trigger.spec.ts` | GitLab notes, Issues, merge requests, review decisions and pipelines as Triggers; mentions, bots, search, scope, the Policy part and the execution variables |
+| `tests/gitlab-source.spec.ts` | The GitLab Source's poll rounds: observe switches, review notes, cursors on abort and failure, subscribed Threads, merge request and default-branch pipelines, and its health, among it `notForge` for both forge Sources |
+| `tests/gitlab-mr.spec.ts`, `tests/gitlab-channel.spec.ts`, `tests/gitlab-read.spec.ts` | The merge request rules and end notices; the GitLab Channel's marker, discussion replies and `gone`; the `gitlab/` reads, pipelines as CI, repository paths, Thread context and the forge's registration |
 | `tests/github-baseline.spec.ts` | A GitHub deployment's built-in parts, prompts, skills, Executor tool schemas and execution environment, held as snapshots so a change of the code host layer leaves them as they were |
 | `tests/deployment.spec.ts`, `tests/environment.spec.ts`, `tests/index.spec.ts` | The plugin configuration and setup, the agent's process environment, the plugin entry |
 | `tests/service-script.spec.ts` | `scripts/dsh-superagent` against fake `ps`, `tmux` and `dsh` |
@@ -450,7 +478,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/class-docs.spec.ts` | Every class in `src` has a JSDoc block before it |
 | `tests/docs.spec.ts` | Numbered documents link only to earlier ones, every local link resolves, no document has merge conflict markers, and this document's tables list every module and every test |
 
-`tests/fixtures/` holds what several tests share: `host.ts`, a simulated DeepSeek Harness host; `panel-server.ts` and `panel.tsx`, the fake management API and the panel around a page; `deployment.ts`, a resolved deployment; `git.ts`, the environment of every git the tests start, which names no repository; and `async.ts`.
+`tests/fixtures/` holds what several tests share: `host.ts`, a simulated DeepSeek Harness host; `panel-server.ts` and `panel.tsx`, the fake management API and the panel around a page; `deployment.ts`, a resolved GitHub or GitLab deployment; `gitlab.ts`, GitLab REST payloads and a `glab` stand-in; `git.ts`, the environment of every git the tests start, which names no repository; and `async.ts`.
 
 ## Persistence
 
@@ -479,7 +507,7 @@ A generated column is computed from its row's JSON and is empty outside its set,
 | Prompt versions | `prompt-revision`, `prompt-version:<n>` |
 | Main Session | `master-id` |
 | Session prompt history | `session-prompts:<session id>` |
-| Source state | Read positions such as `github-cursor:<number>`, PR CI fingerprints and seen Feishu-topic messages; keys begin with the kind or `thread-` plus a Thread key |
+| Source state | Read positions such as `github-cursor:<number>` and `gitlab-cursor:…`, PR and MR CI fingerprints and seen Feishu-topic messages; keys begin with the kind or `thread-` plus a Thread key |
 | Display names | `source-labels:<source id>` |
 
 Dismissal is stored on its Decision. Input text is rendered from the Ticket when read, so neither needs a separate key-value record.
@@ -567,7 +595,7 @@ Ticket cards use the closed `TICKET_STATES` set from `src/app/cards.ts`: an open
 | `settings`, `settings/<block>` | Revisions and summaries, or a complete block ready to save |
 | `prompts`, `prompts/<revision>`, `prompts/current`, `prompts/defaults`, `prompt-preview/<id>` | Prompt configurations and composed text |
 | `models`, `models/<provider>` | Available models |
-| `feishu/<trigger id>/…`, `github/…` | Original Source records, described in the Source skills |
+| `feishu/<trigger id>/…`, `github/…` or `gitlab/…` | Original Source records, described in the Source skills; a deployment has its forge's |
 
 Ticket Threads are marked `context` for context-only follows and `bound` for Source bindings. Assignment pages are newest first and include report previews. Continue lists with `next_offset`. `/input/<id>` accepts an Input's name or id. `settings` includes small blocks in full and summarizes Policy and Source blocks.
 
