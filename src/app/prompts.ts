@@ -112,7 +112,19 @@ export function policySection(settings: Settings, config: PromptConfig = default
   const line = (text: string) => text.replace(/\s*\n\s*/g, ' ')
   const rules = settings.policy.rules.filter(rule => rule.enabled).map(({ id, name, instruction }) => `- ${line(name)} (${id}): ${line(instruction)}`)
   const part = rules.length ? 'runtime/policy' : 'runtime/policy/none'
-  return { key: part, text: fill(builtIn(config, part), { version: policyVersion(settings), mode: settings.eval.mode, rules: rules.join('\n') }) }
+  const text = fill(builtIn(config, part), { version: policyVersion(settings), mode: settings.eval.mode, rules: rules.join('\n') })
+  return { key: part, text: text + tierLines(settings) }
+}
+/**
+ * The Executor model tiers an accept may name in `executor_tier`, each with its hint, after the Policy; none when no tier is
+ * configured, which leaves the section as it was.
+ */
+function tierLines(settings: Settings): string {
+  const tiers = settings.executor.tiers
+  if (!tiers.length) return ''
+  const shown = tiers.map(tier => `- ${tier.name}: ${tier.model.provider}/${tier.model.model}${tier.hint ? `. ${tier.hint.replace(/\s*\n\s*/g, ' ')}` : ''}`)
+  return `\n\nExecutor model tiers. An accept names one in executor_tier only when the requester asked for it for this work, by its name, `
+    + `its model or a description only it fits, such as the expensive model; never on quoted text or your own judgement of the task. Otherwise the worker uses the default model:\n${shown.join('\n')}`
 }
 /**
  * Assemble a role's system prompt sections in order from fixed templates, team sections, the generated execution environment

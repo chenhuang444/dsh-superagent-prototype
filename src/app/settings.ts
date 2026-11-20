@@ -164,6 +164,15 @@ export class Settings {
       try { await resolveRoleModel(this.host.context, model) }
       catch (error) { throw new UserError('modelUnavailable', { block, error: error instanceof Error ? error.message : String(error) }) }
     }
+    // Each tier whose model is new or changed must resolve too, so an accept never starts a worker on a model DSH lacks.
+    if (block === 'executor') {
+      for (const tier of candidate.executor.tiers) {
+        const before = current.executor.tiers.find(item => item.name === tier.name)?.model
+        if (JSON.stringify(tier.model) === JSON.stringify(before)) continue
+        try { await resolveRoleModel(this.host.context, tier.model) }
+        catch (error) { throw new UserError('modelUnavailable', { block: `executor tier ${tier.name}`, error: error instanceof Error ? error.message : String(error) }) }
+      }
+    }
     const setupChanged: SetupChanged = (before, after) => this.host.setup.changed(before, after)
     rules.guard?.(current, candidate, origin, setupChanged)
     if (setupChanged(current, candidate)) await this.host.setup.checkAccounts(block, candidate)

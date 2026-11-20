@@ -3,7 +3,7 @@ import { useRef, useState } from 'react'
 import { TICKET_FILTERS, type TicketFilter } from '../app/api.ts'
 import { LIMITS } from '../limits.ts'
 import { usePoll, type SettingsView, type SourceView, type StateView } from './api.ts'
-import { DisclosureRow, Icon, InfoTip, Input, Pill } from './controls.tsx'
+import { Button, DisclosureRow, Icon, InfoTip, Input, Pill } from './controls.tsx'
 import { SaveBar } from './draft.tsx'
 import { usePanel } from './provider.tsx'
 import { TicketLine } from './rows.tsx'
@@ -72,12 +72,37 @@ function EnvironmentVariables({ groups, sources,
     </div>
   </DisclosureRow>
 }
+type Tier = Omit<SettingsView['blocks']['executor']['value']['tiers'][number], 'model'> & { model: Parameters<typeof ModelField>[0]['value'] }
+/** Edits the Executor's model tiers: each a name, an optional hint for the main Session, and a model. */
+function TierList({ tiers, onChange }: { tiers: Tier[]; onChange: (next: Tier[]) => void }) {
+  const { t } = usePanel()
+  const set = (index: number, next: Partial<Tier>) => onChange(tiers.map((tier, position) => position === index ? { ...tier, ...next } : tier))
+  return <Section title={t('modelTiers')} hint={t('modelTiersHint')} action={tiers.length < LIMITS.tiers ? <Button variant="ghost" size="sm"
+    icon={<Icon name="plus" />} onClick={() => onChange([...tiers, { name: '', hint: '', model: null }])}>{t('addTier')}</Button> : undefined}>
+    {tiers.map((tier, index) => <div key={index} className="dt-form dt-block">
+      <div className="dt-grid3">
+        <Field label={t('tierName')}>
+          <Input className="dt-mono" required pattern="[a-z][a-z0-9\-]{0,31}" spellCheck={false} value={tier.name} placeholder="ui"
+            onChange={event => set(index, { name: event.target.value })} />
+        </Field>
+        <Field label={t('tierHint')}>
+          <Input maxLength={LIMITS.tierHint} value={tier.hint} placeholder={t('tierHintPlaceholder')}
+            onChange={event => set(index, { hint: event.target.value })} />
+        </Field>
+        <div className="dt-field"><Button variant="ghost" size="sm" icon={<Icon name="trash" />} aria-label={t('removeTier')}
+          onClick={() => onChange(tiers.filter((_, position) => position !== index))}>{t('removeTier')}</Button></div>
+      </div>
+      <ModelField id={`dt-tier-model-${index}`} value={tier.model} onChange={model => set(index, { model })} />
+    </div>)}
+  </Section>
+}
 export function ExecutionSettings() {
   const { t } = usePanel()
   const { blocks, environment, sources } = useSettings().settings
   // Keep raw user text (such as separators between blocked commands) in the draft and parse only on save.
   const executor = blocks.executor.value
-  const saved = { ...executor, maxWorkers: String(executor.maxWorkers), blockedCommands: executor.blockedCommands.join(' ') }
+  const saved = { ...executor, tiers: executor.tiers as Tier[], maxWorkers: String(executor.maxWorkers),
+    blockedCommands: executor.blockedCommands.join(' ') }
   const draft = useBlockDraft('executor', saved, blocks.executor.revision,
     value => ({ ...value, maxWorkers: numberOf(value.maxWorkers), blockedCommands: value.blockedCommands.split(/[\s,]+/).filter(Boolean) }))
   const value = draft.value
@@ -96,6 +121,7 @@ export function ExecutionSettings() {
           <h2 className="dt-block-title">{t('term.executor')}<InfoTip text={t('executorIntro')} /></h2>
           <Section title={t('executorModel')} hint={t('executorModelHint')}><ModelField id="dt-worker-model" value={value.model}
             onChange={model => edit({ model })} /></Section>
+          <TierList tiers={value.tiers} onChange={tiers => edit({ tiers })} />
           <Field label={t('maxWorkers')} hint={t('maxWorkersHint')}>
             <Input type="number" min={LIMITS.maxWorkers.min} max={LIMITS.maxWorkers.max} required value={value.maxWorkers}
               onChange={event => edit({ maxWorkers: event.target.value })} />

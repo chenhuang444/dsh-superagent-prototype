@@ -141,6 +141,12 @@ Once a person's message reached a blocked or failed Ticket, the Executor has the
 A retry ends the current Assignment and starts a new one in the same Executor Session, directory, branch and pull request.
 
 The Executor model applies only when a Session is created; an existing Session keeps its model.
+
+### Model tiers
+
+The Execution settings may name model tiers, each with a name, a hint and a model. The main Session's Policy section lists them. An accept names one in `executor_tier` only when the person who asked named that tier, its model, or a description only it fits, such as "the expensive model", for this work; quoted text and the main Session's own view of the task do not count. An unknown tier refuses the accept.
+
+The ticket's Execution keeps the tier and the model it held at acceptance, and the worker's Session starts on that model in place of the Executor model; later edits of the tier leave the ticket as it started. The acknowledgement ends with the tier and its model, and the ticket card and ticket page show them. A ticket without a tier uses the Executor model.
 ### Restart
 
 Running Assignments end with "host restarted" and new ones start with a recovery note that tells the Executor to check its directory, git history and GitHub before repeating any outside action, oldest Ticket first.

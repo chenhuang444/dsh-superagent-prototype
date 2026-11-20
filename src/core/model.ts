@@ -312,7 +312,15 @@ export interface Ticket {
  * Thread closed; the ticket then ends unless its work has not finished (see `Tickets.unfinished`).
  */
 export interface Follow { thread: string; own: boolean; closed?: { at: string; outcome: 'merged' | 'closed' } }
-export interface Execution { name: string; directory: string; assignment: string }
+/**
+ * What its Executor chose: its short name, directory and assignment text, and, when the person who asked named one of the
+ * Executor's model tiers, that tier and the model it held at acceptance, which the worker's Session starts with.
+ */
+export interface Execution { name: string; directory: string; assignment: string; tier?: ExecutionTier }
+export interface ExecutionTier { name: string; provider: string; model: string; reasoningEffort?: string }
+/** A tier's short label for people: its name and model, such as `ui · anthropic/claude-opus`. */
+export const tierLabel = (tier: ExecutionTier): string =>
+  `${tier.name} · ${tier.provider}/${tier.model}${tier.reasoningEffort ? ` (${tier.reasoningEffort})` : ''}`
 
 /** Whether a ticket is open: it has not ended. */
 export const liveTicket = (ticket: Pick<Ticket, 'ended'>): boolean => !ticket.ended

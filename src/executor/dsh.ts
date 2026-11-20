@@ -9,7 +9,7 @@ import type { AssessmentOutcome, Assignment, EngineForExecutor, Execution, Execu
   from '../core/index.ts'
 import type { Machine } from '../deployment.ts'
 import { runAsWorker, verifyDirectory } from '../infra/environment.ts'
-import type { Settings } from '../policy.ts'
+import type { RoleModel, Settings } from '../policy.ts'
 import type { Store } from '../app/store.ts'
 import { Later, type Effects } from '../app/effects.ts'
 import { executionRoot, type Variable } from '../app/execution-environment.ts'
@@ -107,7 +107,15 @@ export function ticketExecution(ticket: Ticket, outcome: Extract<AssessmentOutco
   const assignment = ticket.mandate.strength === 'inferred' && ruleIds
     ? `Proactively accepted under ${ruleIds.join(', ')}. Scope: ${outcome.scope}.${precedence}${note}`
     : note.trim()
-  return { name, directory: join(executionRoot(settings, stateDir), name), assignment }
+  // The tier's model is copied at acceptance, so a later edit of the tier leaves this ticket's worker as it started.
+  const tier = outcome.tier ? settings.executor.tiers.find(item => item.name === outcome.tier) : undefined
+  return { name, directory: join(executionRoot(settings, stateDir), name), assignment,
+    ...tier ? { tier: { name: tier.name, ...tier.model } } : {} }
+}
+/** The model of the tier a ticket's Executor took, which its worker's Session starts with, or none for the Executor's default. */
+export function tierModel(ticket: Pick<Ticket, 'execution'>): RoleModel | undefined {
+  const tier = ticket.execution?.tier
+  return tier ? { provider: tier.provider, model: tier.model, ...tier.reasoningEffort ? { reasoningEffort: tier.reasoningEffort } : {} } : undefined
 }
 /** Character limits for inline assignment and trigger text in worker messages; longer text is read via its resource. */
 const ASSIGNMENT_CHARS = 1500, TRIGGER_CHARS = 600
@@ -312,7 +320,7 @@ export class DshExecutor implements Executor {
         try {
           // Recreate the worker session if it was externally deleted.
           if (!this.host.context.agents.get(sessionId as SessionId)) {
-            await this.host.sessions.ensure(sessionId, ticket.execution?.directory ?? '', ticket.title, 'worker')
+            await this.host.sessions.ensure(sessionId, ticket.execution?.directory ?? '', ticket.title, 'worker', tierModel(ticket))
           }
           if (input) await this.deliverInput(ticket, assignment, input)
         } catch (error) {
@@ -438,7 +446,7 @@ export class DshExecutor implements Executor {
     }
     if (!current()) return
     const sessionId = workerSessionId(ticket.id)
-    const agent = await this.host.sessions.ensure(sessionId, workspace, ticket.title, 'worker')
+    const agent = await this.host.sessions.ensure(sessionId, workspace, ticket.title, 'worker', tierModel(ticket))
     if (!current()) return
     // The background work of the Assignment this one replaces stops first, so its end does not clear this one's message.
     await this.stopped(ticket.id)
