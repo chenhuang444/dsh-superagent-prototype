@@ -2,6 +2,12 @@
 
 All notable changes to dsh-superagent are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Fixed
+
+- A main Session archived in the DSH Web UI no longer stops dsh-superagent. DSH refused each of its steps, so candidates timed out without a Decision while every health entry stayed ready. The next delivery now creates a new main Session in its place.
+
 ## 0.2.2-rc.1 - 2026-11-20
 
 This release targets the DSH 0.2.2-rc.x interfaces. It requires DSH 0.2.2-rc.2 or later, as `engines.dsh` and the peer dependencies state.
