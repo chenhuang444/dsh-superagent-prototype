@@ -42,6 +42,7 @@ import { feishuSettings } from '../sources/feishu.ts'
 import { health, type Health, type SourceContext, type SourceHost } from '../sources/host.ts'
 import { Sessions } from './sessions.ts'
 import { Settings } from './settings.ts'
+import { Workspaces } from './workspaces.ts'
 import { sourceContextOf, type SourceContextDeps } from './source-context.ts'
 import type { ResourceHost } from './resources.ts'
 import { mainTools, type MainToolsHost } from './tools/main.ts'
@@ -72,6 +73,7 @@ export class Runtime extends Service implements SourceHost {
   readonly outbox: Outbox
   readonly engine: Engine
   readonly passes: Passes
+  readonly workspaces: Workspaces
   readonly ready: Promise<void>
   private readonly board = new HealthBoard()
   private readonly runtimeHealth = this.board.claim('runtime', { state: 'starting', detail: '' })
@@ -130,8 +132,10 @@ export class Runtime extends Service implements SourceHost {
       const policyChanged: EngineForSettings['policyChanged'] = (from, to, effects) => { this.engine.policyChanged(from, to, effects) }
       this.settings = new Settings({ store, sources, engine: { policyChanged }, health: board, context: ctx, lifetime: this.lifetime, sessions,
         sourceHost: this, setup, requestPass: () => { this.passes.request() } })
+      const workspaces = this.workspaces = new Workspaces({ store, subprocess: ctx.subprocess, stateDir: machine.stateDir, lifetime: this.lifetime,
+        health: board.claim('workspaces'), paused: () => this.paused(), environment: target => this.cleanupEnvironment(target) })
       this.executor = new DshExecutor({ context: ctx, get engine() { return runtime.engine }, store, effects, health: board.claim('worker'), machine,
-        lifetime: this.lifetime, sessions, closing: () => this.closing(), paused: () => this.paused(), environment, sourceLink: link,
+        lifetime: this.lifetime, sessions, workspaces, closing: () => this.closing(), paused: () => this.paused(), environment, sourceLink: link,
         repliedTo: trigger => repliedTo({ store, sources }, trigger) })
       this.assessor = new MasterAssessor({ get engine() { return runtime.engine }, commands, get deployment() { return setup.deployment }, effects,
         settings: () => store.settings(), paused: () => this.paused(), threadContext: trigger => sources.threadContext(trigger),
@@ -149,6 +153,8 @@ export class Runtime extends Service implements SourceHost {
           const followed = !this.quiet && (event.type === 'trigger.received' || event.type === 'ticket.resumed' || event.type === 'trigger.followup')
           const followup = followed ? followupNotice(store, sources, event.data.triggerId) : undefined
           if (followup) sessions.relay(followup.id, followup.text)
+          // A new ticket takes a directory, so the stale ones are looked at too.
+          if (event.type === 'ticket.created') store.afterCommit(() => { workspaces.request() })
           // Notify the ticket's conversations whenever it ends with its review (a pull request, a change) merged or closed.
           const ended = event.type === 'ticket.ended' ? store.tickets.get(event.data.ticketId) : undefined
           if (ended && setup.configured()) {
@@ -196,6 +202,18 @@ export class Runtime extends Service implements SourceHost {
     const { setup: { deployment }, sources } = this
     return ticketEnvironment({ deployment, sources, settings: this.store.settings(), ticket, ...trigger ? { trigger } : {} })
   }
+  /**
+   * The environment of a cleanup command: a ticket's execution environment, or for a directory no ticket names, the
+   * deployment's with the directory's name and path and an empty ticket id; only the Executor's variables while setup waits.
+   */
+  private cleanupEnvironment({ ticket, name, directory }: { ticket?: Ticket; name: string; directory: string }): Record<string, string> {
+    const settings = this.store.settings()
+    if (!this.setup.configured()) return { DSH_SUPERAGENT_DIR: directory, DSH_SUPERAGENT_NAME: name, DSH_SUPERAGENT_TICKET: ticket?.id ?? '',
+      DSH_SUPERAGENT_BLOCKED_COMMANDS: settings.executor.blockedCommands.join(' ') }
+    const variables = ticket ? this.ticketEnvironment(ticket)
+      : environmentOf({ deployment: this.setup.deployment, sources: this.sources, settings, ticket: { id: '', name, directory } })
+    return Object.fromEntries(variables.map(variable => [variable.key, variable.value]))
+  }
   checkSetup(): void { this.setup.check() }
   receive(trigger: Trigger): ReceiveResult { return this.passes.receive(trigger) }
   idle(): Promise<void> { return this.passes.idle() }
@@ -220,12 +238,13 @@ export class Runtime extends Service implements SourceHost {
     this.executor.resume()
     this.passes.start()
     this.effects.start()
+    this.workspaces.start()
     this.runtimeHealth.set({ state: 'ready', detail: 'Orchestrator is ready', at: now() })
   }
   private httpHost(): HttpHost {
     const runtime = this
-    const { store, sources, prompts, sessions, settings, engine, executor, health, machine, ready, sourceLinks, setup, passes } = this
-    return { store, sources, prompts, sessions, settings, engine, executor, health, machine, ready, sourceLinks,
+    const { store, sources, prompts, sessions, settings, engine, executor, health, machine, ready, sourceLinks, setup, passes, workspaces } = this
+    return { store, sources, prompts, sessions, settings, engine, executor, health, machine, ready, sourceLinks, workspaces,
       get masterId() { return runtime.masterId },
       get deployment() { return setup.deployment },
       get setupProblem() { return setup.problem }, get feishuProblem() { return setup.feishuProblem },
@@ -238,10 +257,11 @@ export class Runtime extends Service implements SourceHost {
     this.closingFlag = true; const passes = this.passes.stop(); this.stopped.abort()
     try {
       this.assessor.stop()
+      this.workspaces.dispose()
       const ids = [this.masterId, ...this.store.tickets.list().map(ticket => workerSessionId(ticket.id))]
       const agents = ids.map(id => this.ctx.agents.get(id as SessionId)).filter((agent): agent is Agent => agent !== undefined)
       for (const agent of agents) agent.cancel({ kind: 'user' }, { keepInbox: true })
-      await Promise.allSettled([passes, this.effects.drain(), ...agents.map(agent => agent.whenIdle())])
+      await Promise.allSettled([passes, this.effects.drain(), this.workspaces.idle(), ...agents.map(agent => agent.whenIdle())])
       // The workers' jobs and subagents stop too: their ends would start worker turns without the tool limits released below.
       await this.executor.shutdown()
       this.executor.dispose()

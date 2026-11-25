@@ -3,7 +3,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { z } from 'zod'
-import { THREAD_FILTERS, TICKET_FILTERS, type Api, type ApiResponse, type RouteParams } from './api.ts'
+import { THREAD_FILTERS, TICKET_FILTERS, WORKSPACE_FILTERS, type Api, type ApiResponse, type RouteParams } from './api.ts'
 import { sourceSkills } from './context.ts'
 import type { ModelCatalog } from '@deepseek-ai/dsh-api-session-controller/types'
 import { PromptConflict, SKILL_NAME, SKILL_PREFIX, TEAM_SECTIONS, builtInBase, builtInParts, defaultPrompts, savePrompts, type Prompts }
@@ -17,6 +17,7 @@ import type { DshExecutor } from '../executor/dsh.ts'
 import type { Health } from '../sources/host.ts'
 import type { SourceRegistry } from '../sources/registry.ts'
 import type { Sessions } from './sessions.ts'
+import type { Workspaces } from './workspaces.ts'
 import type { Store } from './store.ts'
 import type { TextCache } from './cache.ts'
 import type { LinkTarget, ViewHost } from './views/records.ts'
@@ -38,6 +39,7 @@ export interface HttpHost {
   readonly settings: Pick<Settings, 'view' | 'save' | 'pause' | 'sync' | 'refreshLabels'>
   readonly engine: EngineForPeople
   readonly executor: Pick<DshExecutor, 'activeCount'>
+  readonly workspaces: Pick<Workspaces, 'view' | 'scan' | 'clean'>
   readonly health: Record<string, Health>
   readonly machine: Machine
   readonly masterId: string
@@ -143,6 +145,8 @@ const ThreadQuery = z.object({ limit: limit(50, 100), before: z.string().optiona
 const DecisionsQuery = z.object({ kind: z.string().default(''), window: z.literal('24h').optional().catch(undefined), offset,
   limit: limit(30, 200) })
 const count = z.coerce.number().int().nonnegative()
+const WorkspacesQuery = z.object({ filter: z.enum(WORKSPACE_FILTERS).catch('attention') })
+const CleanRequest = z.object({ force: z.boolean().default(false) })
 const PromptsQuery = z.object({ revision: count.optional(), offset: count.default(0) })
 const SourceBlock = z.templateLiteral(['source:', z.string().regex(/^[a-z][a-z0-9-]*$/)])
 const SettingsBlockSchema = z.union([z.enum(['policy', 'eval', 'executor']), SourceBlock])
@@ -192,6 +196,9 @@ function routes(runtime: HttpHost): Routes {
     'GET tickets/:id': ({ params }) => ticketPage(runtime, params.id),
     'POST tickets/:id/retry': ({ params }) => { const id = ticket(params.id); runtime.engine.retryTicket(id); return { retried: true } },
     'POST tickets/:id/stop': ({ params }) => { const id = ticket(params.id); runtime.engine.stopTicket(id); return { stopped: true } },
+    'GET workspaces': ({ query }) => runtime.workspaces.view(WorkspacesQuery.parse(query).filter),
+    'POST workspaces/scan': async () => { await runtime.workspaces.scan(); return { scanned: true } },
+    'POST workspaces/:name/clean': async ({ params, body }) => runtime.workspaces.clean(params.name, CleanRequest.parse(await body()).force),
     'POST executor/pause': async ({ body }) => runtime.settings.pause(z.object({ paused: z.boolean() }).parse(await body()).paused, 'panel'),
     'PUT settings/:block': async ({ params, body }) => {
       const block = SettingsBlockSchema.parse(params.block)

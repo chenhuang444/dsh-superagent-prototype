@@ -153,7 +153,9 @@ function Pages({ route, openTab, deploymentForm }: { route: Route; openTab: (tab
       case 'eval': return <EvalStatus filter={route.query?.filter ?? 'work'} window={route.query?.window}
         paused={!!state?.paused} />
       case 'execution': return route.id !== undefined ? <TicketPage key={route.id} id={route.id} />
-        : state ? <ExecutionStatus filter={route.query?.filter ?? 'open'} state={state} reload={reload} /> : waiting
+        : !state ? waiting : route.query?.view === 'workspaces' ? <ExecutionStatus state={state} reload={reload}
+          workspaces={route.query.filter ?? 'attention'} />
+        : <ExecutionStatus filter={route.query?.filter ?? 'open'} state={state} reload={reload} />
       case 'settings': return state ? <SettingsPage key={state.masterId} group={route.query.group} query={route.query} state={state}
         deploymentForm={deploymentForm} /> : waiting
     }
@@ -181,7 +183,7 @@ export function App({ t, openSession, deploymentForm }: AppProps) {
     stack: replace ? current.stack : [...current.stack, current.route].slice(-20) })), [move])
   const back = useCallback(() => move(current => ({ route: current.stack.at(-1) ?? HOME, stack: current.stack.slice(0, -1) })), [move])
   const openTab = useCallback((tab: Tab) => move(current => ({ stack: [], route: tab === 'settings'
-    ? settingsRoute(lastSettingsGroup(current)) : { page: tab, id: undefined } })), [move])
+    ? settingsRoute(lastSettingsGroup(current)) : { page: tab } as Route })), [move])
   return <PanelProvider t={t} openSession={openSession} navigate={navigate} back={back} backLabel={routeLabel(t, location.stack.at(-1) ?? HOME)}>
     <Pages route={location.route} openTab={openTab} deploymentForm={deploymentForm} />
   </PanelProvider>

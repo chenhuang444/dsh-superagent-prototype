@@ -1,6 +1,6 @@
 import { Context } from '@deepseek-ai/cordis'
 import { bindScopeParent } from '@deepseek-ai/dsh-scope'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { DatabaseSync } from 'node:sqlite'
 import { join } from 'node:path'
@@ -1096,6 +1096,36 @@ it('runs the prepare command once for a new ticket, under the execution root wit
   await runtime.idle()
   expect(runtime.store.tickets.get(failed.ticket.id)!.assignments.at(-1)).toMatchObject({ report: expect.objectContaining({ state: 'failed', summary: expect.stringContaining('The prepare command failed: fatal: no such clone') }) })
   expect(waitsForPerson(runtime.store.tickets.get(failed.ticket.id)!)).toBe(true)
+})
+
+it('rebuilds a cleaned ticket directory when a person\'s message resumes the ticket, and tells the worker once', async () => {
+  const settings = runtime.store.settings()
+  runtime.store.saveSettings({ ...settings, executor: { ...settings.executor, prepare: 'prepare', cleanup: 'cleanup' } })
+  const { ticket, sessionId } = await acceptedTicket(feishu('30', '@bot 修 cleanup'))
+  const workspace = ticket.execution!.directory
+  expect(existsSync(workspace)).toBe(true)
+  await runTool(sessionId, 'orchestrator_report', { state: 'dropped', summary: 'nothing to do' })
+  expect(runtime.store.tickets.get(ticket.id)!.ended).toBeDefined()
+  // The cleanup command ran with the ticket's environment; the fake host runs nothing, so the directory goes by hand.
+  const removed = (spec: { argv: readonly string[] }) => spec.argv[2] === 'cleanup'
+  const original = subprocess.spawn.getMockImplementation()!
+  subprocess.spawn.mockImplementation(((spec: { argv: readonly string[] }) => {
+    if (removed(spec)) rmSync(workspace, { recursive: true })
+    return original(spec as never)
+  }) as never)
+  try {
+    await expect(runtime.workspaces.clean(ticket.execution!.name, false)).resolves.toMatchObject({ state: 'cleaned', ticketId: ticket.id })
+  } finally { subprocess.spawn.mockImplementation(original) }
+  expect(existsSync(workspace)).toBe(false)
+  const cleanup = subprocess.spawn.mock.calls.map(([spec]) => spec as { argv: string[]; env?: Record<string, string> }).find(removed)!
+  expect(cleanup.env).toMatchObject({ DSH_SUPERAGENT_DIR: workspace, DSH_SUPERAGENT_TICKET: ticket.id })
+  deliveries.mockClear()
+  await receive(feishu('31', '还有个问题', { mentions: [], root_id: 'om_30' }))
+  await runtime.pump(); await runtime.idle()
+  expect(existsSync(workspace)).toBe(true)
+  const told = relays(sessionId).filter(item => typeof item.workspace === 'string')
+  expect(told).toEqual([expect.objectContaining({ workspace: expect.stringContaining('was cleaned up at') })])
+  expect(runtime.store.get(KV.workspaces.cleanup(ticket.execution!.name))).toMatchObject({ rebuiltAt: expect.any(String) })
 })
 
 it('counts a ticket whose directory the host prepared before prepare commands existed as prepared', async () => {

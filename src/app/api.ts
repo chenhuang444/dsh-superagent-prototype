@@ -8,11 +8,15 @@ import type { SettingsView } from './views/settings.ts'
 import type { SourceStatusView } from './views/sources.ts'
 import type { DecisionListView, SearchView, ThreadDetailView, ThreadListView } from './views/threads.ts'
 import type { TicketListView } from './views/tickets.ts'
+import type { CleanupRecord, WorkspacesView } from './workspaces.ts'
 
 export const TICKET_FILTERS = ['open', 'person', 'working', 'idle', 'ended'] as const
 export const THREAD_FILTERS = ['subscribed', 'evaluating', 'recent', 'all'] as const
 export type TicketFilter = typeof TICKET_FILTERS[number]
 export type ThreadFilter = typeof THREAD_FILTERS[number]
+/** The Workspaces view's filters: what needs a person (skipped, failed or orphan directories), due, failed, orphan, or all. */
+export const WORKSPACE_FILTERS = ['attention', 'due', 'failed', 'orphan', 'all'] as const
+export type WorkspaceFilter = typeof WORKSPACE_FILTERS[number]
 interface Paged { offset?: number; limit?: number }
 /** Whether a context update was already injected into the main Session or is still pending delivery. */
 type Delivery = 'injected' | 'pending'
@@ -34,6 +38,9 @@ export interface Api {
   'GET tickets/:id': { response: TicketPageView }
   'POST tickets/:id/retry': { response: { retried: true } }
   'POST tickets/:id/stop': { response: { stopped: true } }
+  'GET workspaces': { query?: { filter?: WorkspaceFilter }; response: WorkspacesView }
+  'POST workspaces/scan': { response: { scanned: true } }
+  'POST workspaces/:name/clean': { body: { force: boolean }; response: CleanupRecord }
   'POST executor/pause': { body: { paused: boolean }; response: { paused: boolean } }
   'PUT settings/:block': { body: { value: unknown; revision: number }; response: { revision: number; restarting: boolean } }
   'GET policy/history': { response: HistoryView }

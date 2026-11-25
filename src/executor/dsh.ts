@@ -14,6 +14,7 @@ import type { Store } from '../app/store.ts'
 import { Later, type Effects } from '../app/effects.ts'
 import { executionRoot, type Variable } from '../app/execution-environment.ts'
 import type { Sessions } from '../app/sessions.ts'
+import type { Workspaces } from '../app/workspaces.ts'
 import { WorktreeNameSchema } from '../app/assessment.ts'
 import { resultRelay } from '../app/notices.ts'
 import type { HealthEntry } from '../infra/health.ts'
@@ -71,6 +72,8 @@ export interface ExecutorHost {
   readonly lifetime: AbortSignal
   /** Session manager for worker sessions and for relaying worker reports to the main Session. */
   readonly sessions: Pick<Sessions, 'ensure' | 'prompt' | 'promptedId' | 'relay' | 'holds'>
+  /** The ticket directories' cleanups, which a launch waits for, and which say when a missing directory was cleaned. */
+  readonly workspaces: Pick<Workspaces, 'settled' | 'rebuilt' | 'rebuiltDone'>
   closing(): boolean
   /** Whether processing is paused, which holds launches and input deliveries. */
   paused(): boolean
@@ -142,6 +145,10 @@ const RESUMED = 'This ticket ended earlier and the message that follows, on its 
   + 'for another ticket, hand it back with orchestrator_trigger_handback and report dropped; if it needs nothing, such as thanks, '
   + 'report dropped without a message. Report ready when the follow-up is done. Do not repeat completed work.'
 const RETRIED = 'A person retried this ticket. Continue the assignment from the current worktree, git history and PR state.'
+/** Tells a worker that the prepare command rebuilt its directory after a cleanup removed it. */
+export const rebuiltNote = (at: string): string => `This ticket's directory was cleaned up at ${at}, after the ticket ended, and the prepare `
+  + 'command created it again. Committed work is on the ticket\'s branch, but uncommitted changes, untracked files and installed '
+  + 'dependencies are gone: check the branch and git history, and install dependencies again before building or testing.'
 /** Formats a policy-change input for the worker; inputs recorded before `effect` existed fall back to a general notice. */
 function policyMessage(effect?: PolicyEffect): string {
   if (!effect) return 'Policy change: the access or admission rules changed. Check that the remaining work stays within the assignment.'
@@ -439,8 +446,13 @@ export class DshExecutor implements Executor {
     const source = sourceTrigger(this.host, ticket)
     const workspace = ticket.execution?.directory ?? ''
     if (!current()) return
+    // A cleanup of the directory that runs finishes first, so preparation does not race it.
+    await this.host.workspaces.settled(workspace)
+    if (!current()) return
     // Prepare the workspace directory once; an existing directory counts as already prepared, including worktrees created before `prepare` commands existed.
+    let rebuilt: string | undefined
     if (!await stat(workspace).then(() => true, () => false)) {
+      rebuilt = this.host.workspaces.rebuilt(ticket)
       await this.prepareDirectory(ticket)
       if (!current()) return
     }
@@ -460,7 +472,8 @@ export class DshExecutor implements Executor {
     const later = ticket.assignments.length > 1
     const told = later && await this.host.sessions.holds(sessionId, first)
     if (!current()) return
-    const retried = ticket.assignments.at(-2)?.endedReason === 'retried' ? { note: RETRIED } : {}
+    const retried = { ...ticket.assignments.at(-2)?.endedReason === 'retried' ? { note: RETRIED } : {},
+      ...rebuilt ? { workspace: rebuiltNote(rebuilt) } : {} }
     const assignmentText = ticket.execution?.assignment ?? ''
     const { text: brief, chars, read } = capped(assignmentText, ASSIGNMENT_CHARS, `ticket/${ticket.id}/assignment`)
     const card = told || !source ? undefined : await this.triggerCard(ticket, source.id)
@@ -475,6 +488,7 @@ export class DshExecutor implements Executor {
       () => { if (!current()) throw new Error('Launch authorization changed before worker delivery') },
       () => { this.host.engine.assignmentStarted(ticket.id, assignment.id) })
     this.host.engine.assignmentStarted(ticket.id, assignment.id)
+    if (rebuilt) this.host.workspaces.rebuiltDone(ticket)
   }
   /** Returns the stored ticket for `agent` when it is a worker session, or undefined otherwise. */
   private ticketOf(agent: Agent): Ticket | undefined {

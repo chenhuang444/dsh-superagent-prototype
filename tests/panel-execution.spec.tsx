@@ -4,7 +4,7 @@ import { act } from 'react'
 import { expect, it } from 'vitest'
 import { en, zh } from '../src/client/locales.ts'
 import { usePanel, mount, remount, all, find, tab, click, type, text, field, at } from './fixtures/panel.tsx'
-import { MEMBER, server, ticketSummary, threadSummary } from './fixtures/panel-server.ts'
+import { MEMBER, server, ticketSummary, threadSummary, workspace } from './fixtures/panel-server.ts'
 
 usePanel()
 it('lists Tickets under Execution by who they wait on, with the Executor state and its pause as an action', async () => {
@@ -221,4 +221,49 @@ it('sends one stop for a double click on Confirm', async () => {
   const confirm = find(zh.confirm)
   await act(async () => { confirm.click(); confirm.click() })
   expect(server.requests.filter(request => request.path === 'tickets/t1/stop')).toHaveLength(1)
+})
+
+it('lists the Ticket directories that need a person under Workspaces, and forces a cleanup after a confirmation that names the lost changes', async () => {
+  server.workspaces = [workspace(),
+    workspace({ name: 'fix-copy-t2', directory: '/w/fix-copy-t2', state: 'skipped', reason: 'changed',
+      facts: { kind: 'worktree', branch: 'agent/fix-copy-t2', changed: ['src/app.ts'], changedCount: 1, unpushed: 2, bytes: 1536 * 1024 ** 2, at: '2026-09-23T00:00:00Z' },
+      ticket: { id: 't2', title: '修文案', state: 'ended', stage: 'ended', ended: { at: '2026-09-10T00:00:00Z', by: 'executor', outcome: 'completed' }, sessionId: 'worker-t2' } }),
+    workspace({ name: 'stray', directory: '/w/stray', state: 'orphan', ticket: undefined, facts: { kind: 'plain', changed: [], changedCount: 0, at: '2026-09-23T00:00:00Z' } })]
+  await mount()
+  await click(zh['tab.execution'])
+  await click(zh.workspacesView)
+  expect(server.requests.some(request => request.path === 'workspaces?filter=attention')).toBe(true)
+  // Needs attention: the skipped and the orphaned directory, not the due one.
+  expect(all('.dt-workspace .dt-row-title .dt-mono').map(item => item.textContent)).toEqual(['fix-copy-t2', 'stray'])
+  expect(text()).toContain(zh['workspaceReason.changed'])
+  expect(text()).toContain('1.5 GB')
+  expect(text()).toContain(zh.workspaceOrphanHint)
+  // A directory a plain cleanup would refuse offers only the forced one.
+  const copy = all('.dt-workspace')[0]!
+  expect([...copy.querySelectorAll('button')].map(button => button.textContent)).not.toContain(zh.workspaceCleanNow)
+  await click(find(zh.workspaceForce, '.dt-workspace button'))
+  expect(document.querySelector('[role="dialog"]')?.textContent).toContain('src/app.ts')
+  await click(zh.confirm)
+  expect(server.requests.find(request => request.path === 'workspaces/fix-copy-t2/clean')).toMatchObject({ method: 'POST', body: { force: true } })
+  await click(all('.dt-pill').find(pill => pill.textContent?.startsWith(zh['workspaceFilter.all']))!)
+  expect(server.requests.some(request => request.path === 'workspaces?filter=all')).toBe(true)
+  expect(text()).toContain(zh['workspaceState.cleaned'])
+  await click(zh.workspaceScan)
+  expect(server.requests.some(request => request.path === 'workspaces/scan' && request.method === 'POST')).toBe(true)
+})
+
+it('saves the cleanup command and the retention days with the Execution settings, inserting a variable into the command edited last', async () => {
+  await mount()
+  await click(zh['tab.settings'])
+  await click(find(zh['promptPart.runtime/work'], '.dt-settings-link'))
+  const cleanup = field<HTMLTextAreaElement>(zh.cleanupCommand)
+  await type(cleanup, 'git -C /srv/widgets worktree remove --force ')
+  await act(async () => { cleanup.focus() })
+  cleanup.setSelectionRange(cleanup.value.length, cleanup.value.length)
+  await click(all('.dt-disclosure button, .dt-disclosure [role="button"], button').find(item => item.textContent?.startsWith(zh.environmentVariables))!)
+  await click(find('DSH_SUPERAGENT_DIR', '.dt-disclosure-body button'))
+  await type(field<HTMLInputElement>(zh.retentionDays), '14')
+  await click(zh.save)
+  expect(server.settings.executor).toMatchObject({ cleanup: 'git -C /srv/widgets worktree remove --force "$DSH_SUPERAGENT_DIR"',
+    retentionDays: 14, prepare: '' })
 })

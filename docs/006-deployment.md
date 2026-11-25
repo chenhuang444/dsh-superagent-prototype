@@ -178,6 +178,8 @@ Setup must succeed before polling or work starts. Overview lists missing require
    git -C /home/me/src/widgets worktree add -b "agent/$DSH_SUPERAGENT_NAME" "$DSH_SUPERAGENT_DIR" "refs/dsh-superagent/$DSH_SUPERAGENT_TICKET"
    ```
 
+   To remove the directories of ended Tickets, set a cleanup command, such as `git -C /home/me/src/widgets worktree remove --force "$DSH_SUPERAGENT_DIR"`, and the retention days, seven by default. [003 Execution](003-execution.md#cleaning-up-ticket-directories) describes the rules and a prepare command that rebuilds a cleaned directory from its branch.
+
    List personal CLIs, such as one signed in to your own account, as blocked commands.
 4. **Prompts.** Set the team sections: the disclosure line of messages on the code host, review bots, the commit author and the auto-merge condition.
 
@@ -202,6 +204,8 @@ Agents may rely on these routes and fields. The other routes in `src/app/api.ts`
 | `POST policy-sync/<source id>` | Syncs that Source's allowed list now: `policy`, the Source's part as saved |
 | `GET prompts`, `PUT prompts` with `{"config", "baseRevision"}` | Reads the prompt configuration: `current`, with its `revision` and `config`, `defaults`, `sections`, the team sections in the order Sessions read them, `skillName`, the pattern of a team skill's name, `builtin`, the names a team skill cannot take, and `skillPrefix`, which Sessions load a skill's name under. Or saves it: the new `revision` |
 | `POST tickets/<id>/retry`, `POST tickets/<id>/stop` | Retries or stops a Ticket, as the panel does |
+| `GET workspaces?filter=<attention, due, failed, orphan or all>` | The Ticket directories: `root`, `scannedAt`, `retentionDays`, `cleanupCommand`, `counts` per filter, and `items`, each with `name`, `directory`, `exists`, `state` (`active`, `retained`, `due`, `skipped`, `failed`, `cleaned` or `orphan`), `reason`, its last scan's `facts`, its `ticket` and its last `cleanup` |
+| `POST workspaces/<name>/clean` with `{"force": false}` | Cleans a directory now: its cleanup record, with `state` `cleaned` or `failed` and the command's `output`. `force: true` also discards uncommitted changes and removes what the command leaves |
 
 Health entries are grouped by responsibility:
 
@@ -212,6 +216,7 @@ Health entries are grouped by responsibility:
 | `evals` | Unavailable Evals from the last hour with no later judgement or dismissal |
 | `assessment`, `launch`, `delivery`, `relay`, `notice`, `reply` | Stored work described in [003 Execution](003-execution.md); delivery counts waiting work, while reply covers Channel messages |
 | `worker` | Executor Session event handling; appears after its first failure |
+| `workspaces` | Ticket directory cleanup: an error while a directory's last cleanup failed |
 | `github`, `gitlab`, `feishu`, `history` | Source polling, events and history recovery |
 | `sync:<source id>` | Allowed-list synchronization |
 
@@ -227,7 +232,7 @@ The blocks:
 - `source:github`, `source:gitlab`, `source:feishu`: `{"enabled": true, "config": {…}}`. GitLab's config has `url`, `project` and `cli`, `pollSeconds` (60 by default) and the switches `observeIssues`, `observeMergeRequests`, `observeComments` and `observeCi`, off by default. GitHub's config has `repository` and `cli`, and the switches `observeIssues`, `observePulls`, `observeComments` and `observeCi`, off by default, which receive every new Issue, new pull request and comment in the repository and the default branch's CI; Feishu's has `cli`, `chats` as `[{"chatId": "oc_…", "name": "…", "listen": "mentions"}]` (or `"all"`), `directMessages`, and `otherChats` as `"none"` or `"mentions"`.
 - `policy`: `{"rules": […], "sources": {"github": {"allowed": [{"id": "<login>"}], "bots": [{"id": "dependabot[bot]"}]}, "feishu": {"allowed": [{"id": "ou_…", "name": "…"}], "syncChat": "oc_…", "admission": {"oc_…": {"unlistedAddressed": "explicit"}}}}}`. `bots` lists the bots whose messages may become inferred candidates. An `admission` row is keyed by chat id, `other` or `direct` for Feishu, by `issues`, `pulls`, `comments` or `ci` for GitHub, and by `issues`, `merge_requests`, `comments` or `ci` for GitLab, whose part is `{"allowed": [{"id": "<username>"}], "bots": [{"id": "<username>"}]}`; an unset cell takes its default (see [002 Authorization](002-authorization.md)).
 - `eval`: `mode`, `timeoutSeconds` and `model`.
-- `executor`: `model`, `maxWorkers`, `directory`, `prepare` and `blockedCommands`. The processing pause is a setting of its own, `paused`, which `POST executor/pause` sets.
+- `executor`: `model`, `tiers`, `maxWorkers`, `directory`, `prepare`, `cleanup`, `retentionDays` and `blockedCommands`. The processing pause is a setting of its own, `paused`, which `POST executor/pause` sets.
 
 Changing a repository or CLI runs the corresponding setup check first. A failed check returns 400 with details in `setup`. A successful account change, or any save while setup is pending, returns `restarting: true`. The API is temporarily unavailable while the application restarts.
 

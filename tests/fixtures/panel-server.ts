@@ -20,6 +20,7 @@ import { githubChannel } from '../../src/sources/github-trigger.ts'
 import { feishuKind } from '../../src/sources/feishu.ts'
 import { githubKind } from '../../src/sources/github.ts'
 import type { Health } from '../../src/sources/host.ts'
+import { needsAttention, type WorkspaceRow } from '../../src/app/workspaces.ts'
 import type { SourceKind } from '../../src/sources/kind.ts'
 import { testDeployment } from './deployment.ts'
 
@@ -108,6 +109,8 @@ export interface PanelServer {
   opened: string[]
   dropped: DroppedReply[]
   failing: Extract<Problem, { kind: 'outgoing' }>['outgoing'][]
+  /** The ticket directories `GET workspaces` lists, before its filter. */
+  workspaces: WorkspaceRow[]
 }
 export let server: PanelServer
 
@@ -257,6 +260,7 @@ function initial(): PanelServer {
       defaults: defaultPrompts(), parts: Object.entries(builtInParts()).map(([key, part]) => ({ key, ...part, base: builtInBase(part.text) })),
       defaultChanged: [], revisions: [{ ...defaults, changed: [] }], sessions: [], notificationPending: false, next_offset: null },
     tickets: { open: [ticketSummary()], ended: [ended] }, ticketDetails: { t1: ticketDetail() },
+    workspaces: [workspace()],
     threads: [threadSummary()], threadPages: threadPage,
     person: [ticketSummary({ attention: { id: 'q1', question: '需要确认按钮颜色' }, note: { text: '需要确认按钮颜色', error: false }, reply },
       { stage: 'person', action: 'answer' }),
@@ -286,6 +290,16 @@ type Answer<K extends keyof Api> = ApiResponse<K> | Refusal
 type Route<K extends keyof Api> = { query?: readonly Query<K>[]; answer: (request: Request<K>) => Answer<K> | Promise<Answer<K>> }
   & (Api[K] extends { body: unknown } ? { body: true } : { body?: never })
 const page = <T>(items: T[]) => ({ items, total: items.length, next_offset: null })
+/** A ticket directory row: by default a worktree whose ticket ended and whose cleanup is due. */
+export function workspace(fields: Partial<WorkspaceRow> = {}): WorkspaceRow {
+  return { name: 'fix-regression-t1', directory: '/w/fix-regression-t1', exists: true, state: 'due', cleaning: false,
+    facts: { kind: 'worktree', branch: 'agent/fix-regression-t1', changed: [], changedCount: 0, unpushed: 0, bytes: 3 * 1024 ** 3,
+      at: '2026-09-23T00:00:00Z' },
+    ticket: { id: 't1', title: '修复回归', state: 'ended', stage: 'ended', ended: { at: '2026-09-15T00:00:00Z', by: 'executor', outcome: 'merged' },
+      sessionId: 'worker-t1' },
+    actions: { clean: true }, ...fields }
+}
+const selects = (row: WorkspaceRow, filter: string) => filter === 'all' || (filter === 'attention' ? needsAttention(row.state) : row.state === filter)
 const ticketOf = (id: string) =>
   [...server.tickets.open, ...server.person, ...server.tickets.ended].find(ticket => ticket.id === id) ?? server.ticketDetails[id]
 const SourceSave = z.object({ enabled: z.boolean(), config: z.unknown() })
@@ -337,6 +351,23 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
     if (!ticketOf(params.id)) return refuse(404, 'Ticket not found')
     server.tickets.open = []; server.person = server.person.filter(ticket => ticket.id !== params.id)
     return { stopped: true }
+  } },
+  'GET workspaces': { query: ['filter'], answer: ({ query }) => {
+    const filter = query.filter ?? 'attention'
+    const counts = Object.fromEntries(['attention', 'due', 'failed', 'orphan', 'all'].map(value => [value,
+      server.workspaces.filter(row => selects(row, value)).length])) as ApiResponse<'GET workspaces'>['counts']
+    return { root: '/w', scannedAt: '2026-09-23T00:00:00Z', scanning: false, retentionDays: server.settings.executor.retentionDays,
+      cleanupCommand: !!server.settings.executor.cleanup, counts, items: server.workspaces.filter(row => selects(row, filter)) }
+  } },
+  'POST workspaces/scan': { answer: () => ({ scanned: true }) },
+  'POST workspaces/:name/clean': { body: true, answer: ({ params, body }) => {
+    const row = server.workspaces.find(item => item.name === params.name)
+    if (!row) return refuse(404, 'No ticket directory', { code: 'unknownWorkspace', values: { name: params.name } })
+    if (!body.force && row.facts?.changedCount) return refuse(400, 'uncommitted', { code: 'workspaceChanged', values: { name: params.name } })
+    const cleanup = { at: '2026-09-24T00:00:00Z', state: 'cleaned' as const, command: 'c', ...body.force ? { forced: true as const } : {} }
+    server.workspaces = server.workspaces.map(item => item === row ? { ...row, exists: false, state: 'cleaned', facts: undefined, cleanup,
+      actions: { clean: false } } : item)
+    return cleanup
   } },
   'POST executor/pause': { body: true, answer: ({ body }) => {
     server.settings = { ...server.settings, paused: body.paused }

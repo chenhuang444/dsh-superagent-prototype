@@ -5,6 +5,7 @@ export const LIMITS = {
   evalTimeoutSeconds: { min: 30, max: 600 },
   maxWorkers: { min: 1, max: 16 },
   prepareCommand: 4000,
+  retentionDays: { min: 1, max: 365 },
   tiers: 10,
   tierHint: 200,
   promptMaxChars: { min: 1000, max: 1_000_000 },

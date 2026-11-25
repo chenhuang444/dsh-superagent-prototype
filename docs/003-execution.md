@@ -54,6 +54,28 @@ Before the first Assignment, if the Ticket directory does not exist, the prepare
 
 A failed command fails the Ticket and records its output. A retry or a person's message on one of the Ticket's Threads tries preparation again. A typical command uses `git worktree` to create a checkout. A pull request belongs to the Ticket when its branch's last path segment matches the Ticket's short name.
 
+### Cleaning up Ticket directories
+
+A Ticket directory stays after its Ticket ends. With a cleanup command set, dsh-superagent removes the directory once the Ticket has been ended for the retention period, seven days by default. The period counts from the Ticket's latest end: a Ticket that resumes and ends again starts it anew. An automatic pass looks at every directory under the execution root at start, every hour and whenever a Ticket is accepted. It holds no worker slot and waits while processing is paused or setup is incomplete.
+
+The pass runs the cleanup command with `sh` in the execution root, with the Ticket's execution variables, for at most ten minutes. It skips a directory whose tracked files have uncommitted changes, and one whose Ticket a person's message waits to resume; untracked files do not stop it. The command should remove the directory and keep the branch, for example `git -C /home/me/src/widgets worktree remove --force "$DSH_SUPERAGENT_DIR"`. A command that fails, or finishes and leaves the directory, records its output, and the pass does not run the same command on it again. Without a cleanup command, nothing is cleaned automatically.
+
+The Workspaces view of the Execution status lists each directory with its Ticket and Executor, its git state and size from the last scan, and its cleanup state. A person can clean a directory now, before its retention period ends, or force a cleanup. A forced cleanup also discards uncommitted changes, and removes the directory itself when the command fails or leaves it. A directory no Ticket names is listed as orphaned; its cleanup command receives an empty `DSH_SUPERAGENT_TICKET`. A directory whose Ticket is open cannot be cleaned. A launch of a Ticket waits for a cleanup of its directory that runs.
+
+When a person's message resumes a Ticket whose directory was cleaned, the prepare command runs again, as for a new Ticket. The worker's assignment message then says when the directory was cleaned, and that uncommitted changes, untracked files and installed dependencies are gone. So that the worker finds its commits, the prepare command should check out the Ticket's branch when it exists:
+
+```sh
+REPO=/home/me/src/widgets; BRANCH="agent/$DSH_SUPERAGENT_NAME"
+if git -C "$REPO" show-ref --verify --quiet "refs/heads/$BRANCH"; then
+  git -C "$REPO" worktree add "$DSH_SUPERAGENT_DIR" "$BRANCH"
+else
+  git -C "$REPO" fetch --no-tags "$DSH_SUPERAGENT_GITLAB_URL/$DSH_SUPERAGENT_GITLAB_PROJECT.git" "${DSH_SUPERAGENT_GITLAB_MR_HEAD:-HEAD}:refs/dsh-superagent/$DSH_SUPERAGENT_TICKET" &&
+  git -C "$REPO" worktree add -b "$BRANCH" "$DSH_SUPERAGENT_DIR" "refs/dsh-superagent/$DSH_SUPERAGENT_TICKET"
+fi
+```
+
+On GitHub, fetch from `https://github.com/$DSH_SUPERAGENT_GITHUB_REPOSITORY.git` and `${DSH_SUPERAGENT_GITHUB_PR_HEAD:-HEAD}` instead.
+
 ### Concurrency
 
 A Ticket holds a worker slot from the start of a launch, including preparation, or from the delivery that wakes its idle Executor. It also holds the slot throughout an active turn.

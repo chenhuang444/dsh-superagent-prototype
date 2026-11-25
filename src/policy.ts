@@ -92,7 +92,10 @@ export const TierNameSchema = z.string().regex(/^[a-z][a-z0-9-]{0,31}$/, 'Lowerc
 /** A named executor model a person may ask for when work starts; `hint` tells the main Session what it is for. */
 export const ModelTierSchema = z.object({ name: TierNameSchema, hint: z.string().trim().max(LIMITS.tierHint).default(''), model: RoleModelSchema }).strict()
 export type ModelTier = z.infer<typeof ModelTierSchema>
-/** Executor settings: worker model, model tiers, concurrency, ticket directory root (empty defaults to `<stateDir>/work`), `prepare` command, and blocked commands. */
+/**
+ * Executor settings: worker model, model tiers, concurrency, ticket directory root (empty defaults to `<stateDir>/work`), `prepare` command,
+ * the `cleanup` command that removes an ended ticket's directory once `retentionDays` passed (empty cleans nothing), and blocked commands.
+ */
 export const ExecutorConfigSchema = z.object({
   model: RoleModelSchema.nullable().default(null),
   tiers: z.array(ModelTierSchema).max(LIMITS.tiers).refine(tiers => new Set(tiers.map(tier => tier.name)).size === tiers.length, 'Duplicate tier names')
@@ -100,6 +103,8 @@ export const ExecutorConfigSchema = z.object({
   maxWorkers: z.number().int().min(LIMITS.maxWorkers.min).max(LIMITS.maxWorkers.max).default(3),
   directory: z.string().trim().refine(path => path === '' || path.startsWith('/'), 'An absolute path, or empty for <stateDir>/work').default(''),
   prepare: z.string().max(LIMITS.prepareCommand).default(''),
+  cleanup: z.string().max(LIMITS.prepareCommand).default(''),
+  retentionDays: z.number().int().min(LIMITS.retentionDays.min).max(LIMITS.retentionDays.max).default(7),
   blockedCommands: z.array(CommandNameSchema).default([]),
 }).strict()
 export const SourceInstanceSchema = z.object({ enabled: z.boolean().default(true), config: z.record(z.string(), z.unknown()).default({}) }).strict()
