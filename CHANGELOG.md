@@ -2,7 +2,15 @@
 
 All notable changes to dsh-superagent are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.2.2-rc.2 - 2026-11-25
+
+This release still targets the DSH 0.2.2-rc.x interfaces and requires DSH 0.2.2-rc.2 or later.
+
+### Added
+
+- Cleanup of Ticket directories. A cleanup command in the Execution settings removes an ended Ticket's directory once the retention period passed, seven days by default. It is skipped while tracked files have uncommitted changes or a person's message waits to resume the Ticket; untracked files do not stop it. An automatic pass runs at start, every hour and when a Ticket is accepted. Without a cleanup command nothing is cleaned, so existing deployments are unchanged. See [003 Execution](docs/003-execution.md#cleaning-up-ticket-directories).
+- A Workspaces view under Execution lists every Ticket directory with its Ticket and Executor, git state, size and cleanup state, and the directories no Ticket names. A person can clean one now or force a cleanup, which also discards uncommitted changes. `GET workspaces` and `POST workspaces/<name>/clean` serve it.
+- A Ticket whose cleaned directory is rebuilt by the prepare command tells its worker that local changes and installed dependencies are gone.
 
 ### Fixed
 
