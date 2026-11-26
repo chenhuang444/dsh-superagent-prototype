@@ -1,3 +1,4 @@
+import { AGENT } from './fixtures/gitlab-identity.ts'
 import { afterEach, expect, it, vi } from 'vitest'
 import { Commands } from '../src/infra/commands.ts'
 import { gitlabForge } from '../src/forge/gitlab.ts'
@@ -13,7 +14,7 @@ afterEach(() => vi.restoreAllMocks())
 
 it('registers the GitLab forge with its review parameter, resources and repository reads', () => {
   expect(forgeOf('gitlab')).toBe(gitlabForge)
-  expect(gitlabForge).toMatchObject({ kind: 'gitlab', source: 'gitlab', setupFields: ['url', 'project', 'cli'], skill: 'gitlab',
+  expect(gitlabForge).toMatchObject({ kind: 'gitlab', source: 'gitlab', setupFields: ['url', 'project', 'cli', 'identity', 'workerCli', 'trigger'], skill: 'gitlab',
     resource: { prefix: 'gitlab/' }, review: { param: { name: 'mr_number' } } })
   expect(gitlabForge.review.param.describe({ kind: 'gitlab', login: 'agent-bot', email: '', repository: '', web: '' })).toContain('agent-bot')
 })
@@ -91,7 +92,7 @@ it('gives an assessment of a threaded note its discussion, and of another note t
   glab(commands, { 'merge_requests/34': mr(34), 'merge_requests/34/discussions/abcdef12': discussion('abcdef12', thread),
     'merge_requests/34/notes': thread })
   const trigger = noteTrigger(NoteSchema.parse(thread[1]), { id: 'abcdef12', individual_note: false },
-    { iid: 34, isMr: true, url: `${WEB}/-/merge_requests/34` }, 'agent-bot')!
+    { iid: 34, isMr: true, url: `${WEB}/-/merge_requests/34` }, AGENT)!
   const context = gitlabThreadContext
   const read = await context.read(commands, trigger, 'thread', undefined, {})
   expect(read).toMatchObject({ status: 'discussion' })

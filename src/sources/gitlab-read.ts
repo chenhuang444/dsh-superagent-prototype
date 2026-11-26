@@ -5,6 +5,8 @@ import type { CiSnapshot } from './github-read.ts'
 import { DiscussionSchema, isHumanUser, ItemSchema, noteKind, notePlace, NoteSchema, type GitlabItem, type GitlabNote }
   from './gitlab-trigger.ts'
 import type { ContextMessage, ThreadContext } from './kind.ts'
+import { byAgent, byOwner, type GitlabIdentity } from './gitlab-identity.ts'
+import { gitlabOf } from '../deployment.ts'
 
 const JobSchema = z.looseObject({ name: z.string(), status: z.string(), allow_failure: z.boolean().nullish() })
 type Job = z.infer<typeof JobSchema>
@@ -46,21 +48,30 @@ export async function readGitlabPath(commands: Commands, path: string, kind: 'fi
   return entries.map(entry => entry.name).filter(name => !hidden(name)).sort().join('\n')
 }
 
+/** The deployment's GitLab identity, which marks the agent's and the person's own messages under `personal`. */
+const identityOf = (commands: Commands): GitlabIdentity => gitlabOf(commands.deployment)
+/** `agent` and `owner` under `personal`, where the agent and a person share one account; nothing under `dedicated`. */
+function whose(author: string, body: string | null | undefined, identity: GitlabIdentity): Pick<ContextMessage, 'agent' | 'owner'> {
+  if (identity.identity !== 'personal') return {}
+  return byAgent(author, body, identity) ? { agent: true } : byOwner(author, body, identity) ? { owner: true } : {}
+}
 /** Formats a note as a model-facing message; a bot's message never authorizes work. */
-function noteMessage(note: GitlabNote, id: string, url: string): ContextMessage {
+function noteMessage(note: GitlabNote, id: string, url: string, identity: GitlabIdentity): ContextMessage {
   const place = noteKind(note) === 'diff' ? notePlace(note) : undefined
   return { id, from: note.author.username, at: note.created_at, text: note.body ?? '', ...!isHumanUser(note.author) ? { bot: true } : {},
+    ...note.system ? {} : whose(note.author.username, note.body, identity),
     url, ...place ? { path: place.path, ...place.line != null ? { line: place.line } : {} } : {} }
 }
-function itemMessage(item: GitlabItem, id: string, text: string): ContextMessage {
-  return { id, from: item.author.username, at: item.created_at, text, ...!isHumanUser(item.author) ? { bot: true } : {}, url: item.web_url }
+function itemMessage(item: GitlabItem, id: string, text: string, identity: GitlabIdentity): ContextMessage {
+  return { id, from: item.author.username, at: item.created_at, text, ...!isHumanUser(item.author) ? { bot: true } : {},
+    ...whose(item.author.username, item.description, identity), url: item.web_url }
 }
 /** The notes worth reading: people's and bots' notes, and the system notes that are review decisions. */
 const readable = (notes: GitlabNote[]): GitlabNote[] => notes.filter(note => noteKind(note) !== undefined)
 /** The messages of one discussion; every later note replies to its first. */
-function discussionMessages(notes: GitlabNote[], web: string, id: (note: GitlabNote) => string): ContextMessage[] {
+function discussionMessages(notes: GitlabNote[], web: string, id: (note: GitlabNote) => string, identity: GitlabIdentity): ContextMessage[] {
   const [first] = notes
-  return notes.map(note => ({ ...noteMessage(note, id(note), `${web}#note_${note.id}`), ...first && note !== first ? { reply_to: id(first) } : {} }))
+  return notes.map(note => ({ ...noteMessage(note, id(note), `${web}#note_${note.id}`, identity), ...first && note !== first ? { reply_to: id(first) } : {} }))
 }
 async function discussion(commands: Commands, item: string, id: string, tally?: Tally): Promise<GitlabNote[]> {
   const found = await commands.gitlab(DiscussionSchema, `${item}/discussions/${id}`)
@@ -103,29 +114,30 @@ export async function readGitlab(commands: Commands, resource: string): Promise<
   if (!section) {
     const branches = web.source_branch && web.target_branch ? { source_branch: web.source_branch, target_branch: web.target_branch } : {}
     return { iid: web.iid, title: web.title, state: web.state, ...web.draft ? { draft: true } : {}, ...branches,
-      ...web.labels?.length ? { labels: web.labels } : {}, ...itemMessage(web, String(web.iid), web.description ?? '') }
+      ...web.labels?.length ? { labels: web.labels } : {}, ...itemMessage(web, String(web.iid), web.description ?? '', identityOf(commands)) }
   }
   if (section === 'discussion') {
     const notes = await discussion(commands, item, arg!)
     if (!notes.length) throw new Error('This discussion has no notes to read')
-    return { messages: discussionMessages(notes, web.web_url, note => String(note.id)) }
+    return { messages: discussionMessages(notes, web.web_url, note => String(note.id), identityOf(commands)) }
   }
   const page = Number(arg ?? '1')
   const listed = await commands.gitlab(z.array(z.unknown()), `${item}/notes?sort=asc&order_by=created_at&per_page=20&page=${page}`)
   const tally = { skipped: 0 }
-  const messages = readable(validItems(NoteSchema, listed, tally)).map(note => noteMessage(note, String(note.id), `${web.web_url}#note_${note.id}`))
+  const messages = readable(validItems(NoteSchema, listed, tally)).map(note => noteMessage(note, String(note.id), `${web.web_url}#note_${note.id}`, identityOf(commands)))
   return { messages, ...tally.skipped ? { skipped: tally.skipped } : {},
     ...listed.length === 20 ? { next_resource: `gitlab/${item}/notes/${page + 1}` } : {} }
 }
 /** Reads one page of an Issue's or MR's notes, the title and description first on page 1, with page URLs as message ids. */
 async function conversationPage(commands: Commands, item: string, page: number) {
   const web = await commands.gitlab(ItemSchema, item)
-  const messages: ContextMessage[] = page === 1 ? [itemMessage(web, web.web_url, `${web.title}\n\n${web.description ?? ''}`)] : []
+  const identity = identityOf(commands)
+  const messages: ContextMessage[] = page === 1 ? [itemMessage(web, web.web_url, `${web.title}\n\n${web.description ?? ''}`, identity)] : []
   const listed = await commands.gitlab(z.array(z.unknown()), `${item}/notes?sort=asc&order_by=created_at&per_page=100&page=${page}`)
   const tally = { skipped: 0 }
   messages.push(...readable(validItems(NoteSchema, listed, tally)).map(note => {
     const url = `${web.web_url}#note_${note.id}`
-    return noteMessage(note, url, url)
+    return noteMessage(note, url, url, identity)
   }))
   return { messages, next_resource: listed.length === 100 ? String(page + 1) : null, ...tally.skipped ? { skipped: tally.skipped } : {} }
 }
@@ -145,7 +157,7 @@ export const gitlabThreadContext: ThreadContext<unknown> = {
     const threaded = trigger.channel?.address.discussion
     if (threaded) {
       const web = await commands.gitlab(ItemSchema, item)
-      const messages = discussionMessages(await discussion(commands, item, threaded), web.web_url, note => `${web.web_url}#note_${note.id}`)
+      const messages = discussionMessages(await discussion(commands, item, threaded), web.web_url, note => `${web.web_url}#note_${note.id}`, identityOf(commands))
       const read = part === 'thread' ? messages : messages.slice(0, 1)
       return { messages: read, body: { status: 'discussion', messages: read }, status: 'discussion' }
     }

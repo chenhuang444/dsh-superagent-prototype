@@ -1,7 +1,8 @@
 /** Normalizes GitLab Issues, merge requests, notes, review decisions and pipeline changes into domain Triggers. */
 import { z } from 'zod'
 import { key, type ChannelRef, type Trigger } from '../core/index.ts'
-import { escapeRegExp, sameName } from '../infra/text.ts'
+import { addressesAgent, byAgent, forOwnerOnly, type GitlabIdentity } from './gitlab-identity.ts'
+export { mentions } from './gitlab-identity.ts'
 
 export const SOURCE = 'gitlab'
 /** Issue and MR iids are separate sequences, so a Thread id names the kind: `issue:12`, `mr:34`. */
@@ -42,9 +43,6 @@ export interface ItemRef { iid: number; isMr: boolean; url: string; mrAuthor?: s
  */
 export const isHumanUser = (user: { username: string; bot?: boolean | null | undefined }): boolean =>
   !user.bot && !/(_bot$|^(project|group)_\d+_bot)/i.test(user.username)
-/** `@login`, in any case, not inside an address or a longer name. */
-export const mentions = (text: string, login: string): boolean =>
-  new RegExp(`(?<![\\w@.])@${escapeRegExp(login)}(?![A-Za-z0-9_-]|\\.\\w)`, 'i').test(text)
 /** The system notes that are review decisions; other system notes (pushes, label changes) are no event. */
 const REVIEW = /^(approved this merge request|unapproved this merge request|requested changes)\b/i
 /** The kind of a note's Trigger, or undefined for a system note that is no review decision. */
@@ -59,37 +57,44 @@ export function notePlace(note: GitlabNote): { path: string; line?: number } | u
   const line = position?.new_line ?? position?.old_line
   return path ? { path, ...line != null ? { line } : {} } : undefined
 }
-const author = (user: GitlabUser, agent: string) =>
-  ({ actor: { source: SOURCE, id: user.username }, human: isHumanUser(user) && !sameName(user.username, agent) })
+const author = (user: GitlabUser, body: string | null | undefined, agent: GitlabIdentity) =>
+  ({ actor: { source: SOURCE, id: user.username }, human: isHumanUser(user) && !byAgent(user.username, body, agent) })
+/** `ownerOnly` when, under `personal`, the text only asks the operator as a person (see `forOwnerOnly`). */
+const owner = (text: string, agent: GitlabIdentity) => forOwnerOnly(text, agent) ? { ownerOnly: true } : {}
 /**
- * Builds the Trigger of a note in `discussion`; none for the agent's own note, a system note that is no review decision, or an
- * empty one. A note keeps its id when edited or resolved, so a later read of it is a duplicate.
+ * Builds the Trigger of a note in `discussion`; none for the agent's own note (`byAgent`), a system note that is no review
+ * decision, or an empty one. A note keeps its id when edited or resolved, so a later read of it is a duplicate.
  */
 export function noteTrigger(note: GitlabNote, discussion: Pick<GitlabDiscussion, 'id' | 'individual_note'>, ref: ItemRef,
-  agent: string): Trigger | undefined {
+  agent: GitlabIdentity): Trigger | undefined {
   const kind = noteKind(note)
-  if (!kind || sameName(note.author.username, agent)) return undefined
+  if (!kind || (kind !== 'review' && byAgent(note.author.username, note.body, agent))) return undefined
+  // A review decision is a system note, which carries no marker: the agent's account decided it only under `dedicated`.
+  if (kind === 'review' && agent.identity === 'dedicated' && byAgent(note.author.username, note.body, agent)) return undefined
   const place = kind === 'diff' ? notePlace(note) : undefined
   const text = [place ? `${place.path}${place.line != null ? `:${place.line}` : ''}` : '', note.body ?? ''].filter(Boolean).join('\n\n')
   if (!text) return undefined
   const url = `${ref.url}#note_${note.id}`
   const thread = threadId(ref.isMr, ref.iid)
   return { id: key('gitlab-note', thread, String(note.id)), source: SOURCE, threads: [{ source: SOURCE, id: thread }],
-    ...author(note.author, agent), at: note.created_at, text,
-    ...kind !== 'review' && mentions(note.body ?? '', agent) ? { addressed: 'mention' as const } : {},
+    ...author(note.author, kind === 'review' ? '' : note.body, agent), at: note.created_at, text,
+    ...kind !== 'review' && addressesAgent(note.body ?? '', agent) ? { addressed: 'mention' as const } : {},
     channel: gitlabChannel(ref.isMr, ref.iid, discussion.individual_note ? undefined : discussion.id, url), url,
     meta: { iid: ref.iid, isMr: ref.isMr, kind, noteId: note.id, discussionId: discussion.id, ...ref.mrAuthor ? { mrAuthor: ref.mrAuthor } : {},
-      ...place ? { path: place.path, line: place.line ?? null } : {} } }
+      ...place ? { path: place.path, line: place.line ?? null } : {}, ...kind !== 'review' ? owner(note.body ?? '', agent) : {} } }
 }
+/** The text of an Issue or MR that may address the agent: its description, and under `personal` its title too. */
+export const itemAddressed = (item: Pick<GitlabItem, 'title' | 'description'>, agent: GitlabIdentity): boolean =>
+  addressesAgent(agent.identity === 'personal' ? `${item.title}\n${item.description ?? ''}` : item.description ?? '', agent)
 /** Builds the Trigger of a new Issue's or MR's title and description; Issues and MRs have ids of their own. */
-export function itemTrigger(item: GitlabItem, isMr: boolean, agent: string): Trigger {
+export function itemTrigger(item: GitlabItem, isMr: boolean, agent: GitlabIdentity): Trigger {
   const body = item.description ?? ''
   const thread = threadId(isMr, item.iid)
   return { id: key(isMr ? 'gitlab-mr' : 'gitlab-issue', String(item.iid)), source: SOURCE, threads: [{ source: SOURCE, id: thread }],
-    ...author(item.author, agent), at: item.created_at, text: `${item.title}\n\n${body}`,
-    ...mentions(body, agent) ? { addressed: 'mention' as const } : {},
+    ...author(item.author, body, agent), at: item.created_at, text: `${item.title}\n\n${body}`,
+    ...itemAddressed(item, agent) ? { addressed: 'mention' as const } : {},
     channel: gitlabChannel(isMr, item.iid, undefined, item.web_url), url: item.web_url,
-    meta: { iid: item.iid, isMr, kind: isMr ? 'mr' : 'issue', ...isMr ? { mrAuthor: item.author.username } : {} } }
+    meta: { iid: item.iid, isMr, kind: isMr ? 'mr' : 'issue', ...isMr ? { mrAuthor: item.author.username } : {}, ...owner(body, agent) } }
 }
 /** Builds the Trigger of a change of an MR's pipeline; CI has no sender. */
 export function ciTrigger(mr: { iid: number; web_url: string; author: { username: string } }, revision: number, summary: string): Trigger {

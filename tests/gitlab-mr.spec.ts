@@ -1,3 +1,4 @@
+import { AGENT } from './fixtures/gitlab-identity.ts'
 import { expect, it } from 'vitest'
 import { feishuTrigger } from '../src/sources/feishu.ts'
 import { claimMr, mrEndNotices, mrOf, MrSchema, observeMr, type Mr } from '../src/sources/gitlab-mr.ts'
@@ -9,7 +10,7 @@ const ended = (iid: number, at: string, merged = true) => parsed(agentMr(iid, 'a
 
 it('lets a ticket follow its source MR or the agent\'s MR of the project from its branch, and refuses others', () => {
   const h = gitlabHost()
-  const source = itemTrigger(parsed(mr(30)), true, 'agent-bot')
+  const source = itemTrigger(parsed(mr(30)), true, AGENT)
   h.store.triggers.save(source)
   h.store.tickets.save(ticket('t1', { execution: execution('fix-1'), origin: { triggerId: source.id, triggerIds: [source.id] } }))
   h.store.tickets.save(ticket('t2', { execution: execution('other-2'), follows: [{ thread: 'gitlab:mr:41', own: true }] }))

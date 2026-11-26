@@ -25,7 +25,7 @@ export const testDeployment = (overrides: Partial<Deployment> = {}): Deployment 
 /** The agent's account on `https://gitlab.example.com`, with project `acme/widgets` (id 42). */
 export const testGitlab = (overrides: Partial<GitlabAccount> = {}): GitlabAccount => ({
   cli: '/bin/false', url: 'https://gitlab.example.com', host: 'gitlab.example.com', login: 'agent-bot', id: 7, email: 'agent-bot@example.com',
-  projectId: 42, ...overrides,
+  projectId: 42, identity: 'dedicated', trigger: 'agent', accessLevel: 30, ...overrides,
 })
 /** A GitLab deployment of project `acme/widgets` on `https://gitlab.example.com`. */
 export const testGitlabDeployment = (overrides: Partial<Deployment> & { gitlab?: GitlabAccount } = {}): Deployment => {

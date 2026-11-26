@@ -64,6 +64,11 @@ it('gives GitLab Sessions prompts and skills that name no GitHub workflow', () =
   expect(texts.worker).toContain('mr_number')
   expect(texts.worker).toContain('$DSH_SUPERAGENT_GITLAB_COMMIT_EMAIL')
   expect(texts.worker).toContain('DSH_SUPERAGENT_GITLAB_PROJECT_ID')
-  expect(texts.gitlab).toContain('glab api -X POST projects/$DSH_SUPERAGENT_GITLAB_PROJECT_ID/merge_requests/<iid>/discussions/<discussion-id>/notes')
+  // Workers write to GitLab only through the host's tools, which sign and mark what they post.
+  expect(texts.gitlab).toContain('call gitlab_reply with kind mr')
+  expect(texts.gitlab).not.toMatch(/glab api -X (POST|PUT)/)
+  expect(texts.worker).toContain('write to it only with the gitlab_* tools')
+  expect(texts.worker).not.toMatch(/glab (api -X|mr (note|create|update|close))/)
+  expect(texts.worker).toContain('never use git push options')
   expect(composeSkill(config, 'github')).toBe('')
 })

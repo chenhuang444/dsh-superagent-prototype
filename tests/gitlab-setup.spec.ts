@@ -7,11 +7,13 @@ import { Config, machineOf, resolveGitlab, setupFields, type Probe } from '../sr
 let dir: string
 let path: string
 let cli: string
+let workerCli: string
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'gitlab-setup-'))
   mkdirSync(join(dir, 'bin')); mkdirSync(join(dir, 'state', 'worker-bin'), { recursive: true })
   cli = join(dir, 'bin', 'glab')
-  for (const file of [cli, join(dir, 'state', 'worker-bin', 'glab')]) { writeFileSync(file, '#!/bin/sh\nexit 1\n'); chmodSync(file, 0o755) }
+  workerCli = join(dir, 'bin', 'glab-worker')
+  for (const file of [cli, workerCli, join(dir, 'state', 'worker-bin', 'glab')]) { writeFileSync(file, '#!/bin/sh\nexit 1\n'); chmodSync(file, 0o755) }
   // The stale worker shim comes first on PATH and must be skipped.
   path = [join(dir, 'state', 'worker-bin'), join(dir, 'bin')].join(':')
 })
@@ -21,12 +23,15 @@ const machine = () => machineOf(Config({ stateDir: join(dir, 'state'), forge: 'g
 const USER = { id: 7, username: 'agent-bot', email: 'agent-bot@example.com', commit_email: 'agent-bot@users.example.com', public_email: null }
 const PROJECT = { id: 42, path_with_namespace: 'acme/widgets', default_branch: 'main',
   permissions: { project_access: { access_level: 30 }, group_access: null } }
-/** A fake probe answering `glab api --hostname <host> <endpoint>` from `answers`; a missing answer fails like glab does. */
+/**
+ * A fake probe answering `glab api --hostname <host> <endpoint>` from `answers`, keyed `<host> <endpoint>` for the agent's glab
+ * and `worker <host> <endpoint>` for the worker's; a missing answer fails like glab does.
+ */
 const fake = (answers: Record<string, unknown>, calls: string[][] = []): Probe => async argv => {
   calls.push(argv)
   const [program, api, flag, host, endpoint, ...rest] = argv
-  if (program !== cli || api !== 'api' || flag !== '--hostname' || rest.length) throw new Error(`unexpected ${argv.join(' ')}`)
-  const answer = answers[`${host} ${endpoint}`]
+  if ((program !== cli && program !== workerCli) || api !== 'api' || flag !== '--hostname' || rest.length) throw new Error(`unexpected ${argv.join(' ')}`)
+  const answer = answers[`${program === workerCli ? 'worker ' : ''}${host} ${endpoint}`]
   if (answer === undefined) throw new Error('glab: 404 Not Found (HTTP 404)')
   return typeof answer === 'string' ? answer : JSON.stringify(answer)
 }
@@ -42,10 +47,12 @@ describe('GitLab setup', () => {
     const deployment = await resolveGitlab(machine(), config, fake(answers(), calls), path)
     expect(calls).toEqual([[cli, 'api', '--hostname', 'gitlab.example.com', 'user'], [cli, 'api', '--hostname', 'gitlab.example.com', 'projects/acme%2Fwidgets']])
     expect(deployment).toMatchObject({ forge: 'gitlab', repository: 'acme/widgets',
-      gitlab: { cli, url: 'https://gitlab.example.com', host: 'gitlab.example.com', login: 'agent-bot', id: 7, email: 'agent-bot@users.example.com', projectId: 42 },
+      gitlab: { cli, url: 'https://gitlab.example.com', host: 'gitlab.example.com', login: 'agent-bot', id: 7, email: 'agent-bot@users.example.com', projectId: 42,
+        identity: 'dedicated', trigger: 'agent', accessLevel: 30 },
       account: { kind: 'gitlab', login: 'agent-bot', email: 'agent-bot@users.example.com', repository: 'acme/widgets', web: 'https://gitlab.example.com' } })
     expect(deployment).not.toHaveProperty('github')
-    expect(setupFields('gitlab')).toEqual({ gitlab: ['url', 'project', 'cli'], feishu: ['cli'] })
+    expect(deployment.gitlab).not.toHaveProperty('workerCli')
+    expect(setupFields('gitlab')).toEqual({ gitlab: ['url', 'project', 'cli', 'identity', 'workerCli', 'trigger'], feishu: ['cli'] })
   })
   it('keeps the port in the host glab is asked for, and uses the project\'s canonical path and a subgroup', async () => {
     const moved = { ...PROJECT, path_with_namespace: 'acme/platform/widgets' }
@@ -66,7 +73,7 @@ describe('GitLab setup', () => {
   it('accepts Developer access from the project or its group, whichever is higher', async () => {
     const access = (project_access: object | null, group_access: object | null) =>
       resolveGitlab(machine(), config, fake(answers({ 'gitlab.example.com projects/acme%2Fwidgets': { ...PROJECT, permissions: { project_access, group_access } } })), path)
-    await expect(access(null, { access_level: 40 })).resolves.toMatchObject({ repository: 'acme/widgets' })
+    await expect(access(null, { access_level: 40 })).resolves.toMatchObject({ repository: 'acme/widgets', gitlab: { accessLevel: 40 } })
     await expect(access({ access_level: 20 }, { access_level: 30 })).resolves.toMatchObject({ repository: 'acme/widgets' })
     await expect(access({ access_level: 20 }, { access_level: 10 })).rejects.toMatchObject({ code: 'gitlabProjectReadOnly' })
     await expect(access(null, null)).rejects.toMatchObject({ code: 'gitlabProjectReadOnly' })
@@ -93,5 +100,60 @@ describe('GitLab setup', () => {
     for (const project of ['widgets', 'acme/', '/acme/widgets', 'acme/wid gets']) {
       await expect(resolveGitlab(machine(), { ...config, project }, fake(answers()), path)).rejects.toThrow('group/name')
     }
+  })
+  describe('personal mode', () => {
+    const personal = { ...config, identity: 'personal', workerCli: 'glab-worker', trigger: 'bot' }
+    const TOKEN = { scopes: ['api'], expires_at: '2027-02-01' }
+    const WORKER = { scopes: ['read_api', 'write_repository'], expires_at: '2027-01-15' }
+    const tokens = (overrides: Record<string, unknown> = {}) => answers({ 'worker gitlab.example.com user': USER,
+      'gitlab.example.com personal_access_tokens/self': TOKEN, 'worker gitlab.example.com personal_access_tokens/self': WORKER, ...overrides })
+    it('checks the worker\'s glab and both tokens, and records when they expire', async () => {
+      const calls: string[][] = []
+      const deployment = await resolveGitlab(machine(), personal, fake(tokens(), calls), path)
+      expect(deployment.gitlab).toEqual({ cli, url: 'https://gitlab.example.com', host: 'gitlab.example.com', login: 'agent-bot', id: 7,
+        email: 'agent-bot@users.example.com', projectId: 42, identity: 'personal', trigger: 'bot', accessLevel: 30, workerCli,
+        expiresAt: '2027-02-01', workerExpiresAt: '2027-01-15' })
+      expect(calls.map(argv => `${argv[0] === workerCli ? 'worker' : 'agent'} ${argv[4]}`)).toEqual(['agent user', 'agent projects/acme%2Fwidgets',
+        'worker user', 'agent personal_access_tokens/self', 'worker personal_access_tokens/self'])
+      // read_repository and read_user are allowed on the worker's token besides the two it needs.
+      await expect(resolveGitlab(machine(), personal, fake(tokens({ 'worker gitlab.example.com personal_access_tokens/self':
+        { scopes: ['read_user', 'read_repository', 'read_api', 'write_repository'], expires_at: null } })), path))
+        .resolves.toMatchObject({ gitlab: { workerCli, expiresAt: '2027-02-01' } })
+    })
+    it('skips the token checks where GitLab cannot report a token, and says so', async () => {
+      const old = await resolveGitlab(machine(), personal, fake(tokens({ 'gitlab.example.com personal_access_tokens/self': undefined,
+        'worker gitlab.example.com personal_access_tokens/self': undefined })), path)
+      expect(old.gitlab).toMatchObject({ workerCli, tokenUnchecked: true })
+      expect(old.gitlab).not.toHaveProperty('expiresAt')
+      const unparsed = await resolveGitlab(machine(), personal, fake(tokens({ 'worker gitlab.example.com personal_access_tokens/self': 'not json' })), path)
+      expect(unparsed.gitlab).toMatchObject({ expiresAt: '2027-02-01', tokenUnchecked: true })
+      expect(unparsed.gitlab).not.toHaveProperty('workerExpiresAt')
+    })
+    it('names what personal mode needs of the worker\'s glab and the tokens', async () => {
+      await fails('gitlabWorkerCliUnset', {}, { ...personal, workerCli: '' }, fake(tokens()))
+      await fails('gitlabWorkerCliMissing', { output: 'glab-missing is not an executable file on PATH' }, { ...personal, workerCli: 'glab-missing' }, fake(tokens()))
+      await fails('gitlabWorkerCliSignedOut', { host: 'gitlab.example.com', output: 'glab: 404 Not Found (HTTP 404)' }, personal,
+        fake(tokens({ 'worker gitlab.example.com user': undefined })))
+      await fails('gitlabWorkerOtherAccount', { account: 'agent-bot', worker: 'someone' }, personal,
+        fake(tokens({ 'worker gitlab.example.com user': { ...USER, id: 8, username: 'someone' } })))
+      await fails('gitlabHostScopes', { scopes: 'read_api, write_repository' }, personal,
+        fake(tokens({ 'gitlab.example.com personal_access_tokens/self': WORKER })))
+      await fails('gitlabWorkerScopes', { extra: 'api', missing: 'none' }, personal,
+        fake(tokens({ 'worker gitlab.example.com personal_access_tokens/self': { scopes: ['api', 'read_api', 'write_repository'] } })))
+      await fails('gitlabWorkerScopes', { extra: 'none', missing: 'write_repository' }, personal,
+        fake(tokens({ 'worker gitlab.example.com personal_access_tokens/self': { scopes: ['read_api'] } })))
+      const failing: Probe = async argv => {
+        if (argv[4] === 'personal_access_tokens/self') throw new Error('glab: 500 Internal Server Error (HTTP 500)')
+        return fake(tokens())(argv)
+      }
+      await fails('gitlabTokenUnreadable', { host: 'gitlab.example.com', output: 'glab: 500 Internal Server Error (HTTP 500)' }, personal, failing)
+    })
+    it('keeps a dedicated account\'s setup as it was, whatever the worker settings say', async () => {
+      const calls: string[][] = []
+      const deployment = await resolveGitlab(machine(), { ...config, workerCli: 'glab-worker' }, fake(answers(), calls), path)
+      expect(calls).toHaveLength(2)
+      expect(deployment.gitlab).toMatchObject({ identity: 'dedicated', trigger: 'agent' })
+      expect(deployment.gitlab).not.toHaveProperty('workerCli')
+    })
   })
 })

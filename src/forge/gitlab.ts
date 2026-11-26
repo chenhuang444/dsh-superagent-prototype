@@ -23,7 +23,7 @@ const review: ForgeReview<Mr> = {
 export const gitlabForge: Forge = {
   kind: 'gitlab',
   source: 'gitlab',
-  setupFields: ['url', 'project', 'cli'] satisfies (keyof typeof GitlabAccountsSchema.shape)[],
+  setupFields: ['url', 'project', 'cli', 'identity', 'workerCli', 'trigger'] satisfies (keyof typeof GitlabAccountsSchema.shape)[],
   resolve: (machine, config, probe, path) => resolveGitlab(machine, config, probe, path),
   environment: gitlabEnvironment,
   review: review as ForgeReview<never>,

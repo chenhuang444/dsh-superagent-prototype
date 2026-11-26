@@ -2,15 +2,15 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { z } from 'zod'
 import { key, type Thread } from '../core/index.ts'
-import { GitlabAccountsSchema, gitlabOf } from '../deployment.ts'
+import { GitlabAccountsSchema, gitlabOf, type Deployment } from '../deployment.ts'
 import { CliError, validItems, type Tally } from '../infra/commands.ts'
-import { sameName } from '../infra/text.ts'
 import { KV } from '../kv.ts'
 import { ciCounts, ciFact, ciFailures, ciSummary, type CiSnapshot } from './github-read.ts'
 import { gitlabLink, sendGitlab } from './gitlab-channel.ts'
-import { mrsOf, observeMr, readMr, type Mr } from './gitlab-mr.ts'
+import { agentMr, mrsOf, observeMr, readMr, type Mr } from './gitlab-mr.ts'
+import { byAgent } from './gitlab-identity.ts'
 import { gitlabThreadContext, latestPipeline, pipelineChecks } from './gitlab-read.ts'
-import { branchCiTrigger, ciTrigger, DiscussionSchema, ItemSchema, mentions, noteKind, NoteSchema, noteTrigger, itemTrigger,
+import { branchCiTrigger, ciTrigger, DiscussionSchema, itemAddressed, ItemSchema, noteKind, NoteSchema, noteTrigger, itemTrigger,
   SOURCE, threadId, type GitlabItem, type ItemRef } from './gitlab-trigger.ts'
 import { health, sourceContext, type Health, type SourceContext } from './host.ts'
 import type { Localized, SourceKind } from './kind.ts'
@@ -30,6 +30,8 @@ function scopeOf(meta: Record<string, unknown>): Scope | undefined {
   return meta.kind === 'note' || meta.kind === 'diff' || meta.kind === 'review' ? 'comments' : undefined
 }
 const USERNAME = '[A-Za-z0-9_.\\-]+'
+/** GitLab's Maintainer role. */
+const MAINTAINER = 40
 export const gitlabKind: SourceKind<GitlabConfig> = {
   kind: SOURCE,
   title: { zh: 'GitLab', en: 'GitLab' },
@@ -42,6 +44,14 @@ export const gitlabKind: SourceKind<GitlabConfig> = {
       hint: { zh: '写作 group/name，可以带子组（group/subgroup/name）。这个来源接收这个项目的 Issue、MR 和讨论；智能体账号至少要有 Developer 权限。', en: 'Written group/name, with subgroups if any (group/subgroup/name). This Source receives the project\'s Issues, merge requests and discussion; the agent account needs at least the Developer role.' } },
     { key: 'cli', type: 'text', label: { zh: '智能体的 glab', en: 'Agent glab' },
       hint: { zh: '命令名或绝对路径，通常是用 GLAB_CONFIG_DIR 登录智能体账号的 glab 包装脚本。智能体以它登录的账号行事，执行器以 glab 调用它。保存时检查它登录的账号能否推送到项目，然后重启 dsh-superagent。', en: 'A command name or absolute path, usually a glab wrapper signed in to the agent account through GLAB_CONFIG_DIR. The agent acts as the account it is signed in to, and the Executor calls it as glab. Saving checks that this account can push to the project, then restarts dsh-superagent.' } },
+    { key: 'identity', type: 'select', label: { zh: '账号身份', en: 'Identity' },
+      options: [{ value: 'dedicated', label: { zh: 'dedicated：智能体自己的账号', en: 'dedicated: the agent\'s own account' } },
+        { value: 'personal', label: { zh: 'personal：我本人的账号（个人访问令牌）', en: 'personal: my own account (personal access tokens)' } }],
+      hint: { zh: 'dedicated：机器人或专门建的用户，@ 它就是找智能体。personal：智能体用你的个人访问令牌行事，它写的内容带隐藏标记和署名；找智能体要在行首写触发词加冒号，@ 你是找你本人。还要设置执行器的 glab，见 docs/006-deployment.md。保存后重启 dsh-superagent。', en: 'dedicated: a bot or a user made for it, and mentioning it addresses the agent. personal: the agent acts with your personal access tokens and marks and signs what it writes; people address it with the trigger word and a colon at a line start, and mentioning you reaches you. Also set Worker glab; see docs/006-deployment.md. Saving restarts dsh-superagent.' } },
+    { key: 'workerCli', type: 'text', label: { zh: '执行器的 glab', en: 'Worker glab' },
+      hint: { zh: '只在身份为 personal 时需要：登录同一个账号、令牌只有 read_api 和 write_repository 的 glab 包装脚本。执行器用它读 GitLab 和推送分支，写评论、开 MR 都经 dsh-superagent。', en: 'Needed only with personal identity: a glab wrapper signed in to the same account with a token that has only read_api and write_repository. The Executor reads GitLab and pushes branches with it; notes and MRs are written through dsh-superagent.' } },
+    { key: 'trigger', type: 'text', pattern: '[A-Za-z][A-Za-z0-9_\\-]{0,31}', label: { zh: '触发词', en: 'Trigger' },
+      hint: { zh: '身份为 personal 时，行首（前面可以有 @ 某人）写这个词加冒号就是找智能体，例如 agent: 把间距改成 8px。引用和代码里的不算。', en: 'With personal identity, this word and a colon at a line start, after any mentions, addresses the agent, as in agent: set the gap to 8px. Quotes and code do not count.' } },
     { key: 'pollSeconds', type: 'number', advanced: true, min: 60, max: 3600, label: { zh: '轮询间隔 / 秒', en: 'Polling interval / seconds' } },
     { key: 'failuresBeforeError', type: 'number', advanced: true, min: 1, max: 20, label: { zh: '连续失败几次后报告异常', en: 'Failed polls before reporting an error' }, hint: { zh: '单次网络中断会在下一次轮询时自动重试，不必报告。', en: 'A single network interruption is retried on the next poll and need not be reported.' } },
     { key: 'observeIssues', type: 'switch', label: { zh: '接收项目里的新 Issue', en: 'Receive new Issues in the project' },
@@ -77,7 +87,7 @@ export const gitlabKind: SourceKind<GitlabConfig> = {
     { key: 'bots', type: 'rows', label: { zh: '评论可以成为候选的机器人', en: 'Bots whose comments may become candidates' },
       hint: { zh: '名单里的机器人账号（例如项目访问令牌的 project_12_bot_…）的评论在来源收到时成为推断的候选，交给评估：评论 @ 了智能体，或者打开了“接收项目里的评论”。它们不能发起明确的请求，也不能停止工单；其他机器人的评论不接收。', en: 'A comment of a bot account on this list, such as a project access token\'s project_12_bot_…, becomes an inferred candidate for an assessment when the Source receives it: when it mentions the agent, or with Receive comments in the project on. Such a comment never makes an explicit request or stops a ticket; other bots\' comments are not admitted.' },
       columns: [{ key: 'id', type: 'text', label: { zh: '用户名', en: 'Username' }, pattern: USERNAME }] }],
-    explicit: { zh: '名单里的账号在 Issue、MR 或评论里 @ 智能体的账号。', en: 'An account on the list mentions the agent\'s account in an Issue, a merge request or a comment.' },
+    explicit: { zh: '名单里的账号在 Issue、MR 或评论里 @ 智能体的账号；用本人账号时是在行首写触发词加冒号。', en: 'An account on the list mentions the agent\'s account in an Issue, a merge request or a comment; with an own account, writes the trigger word and a colon at a line start.' },
     rows(stored) {
       const config = GitlabConfigSchema.partial().parse(stored)
       const note = (observed: boolean | undefined) => observed ? { zh: '全部', en: 'All' } : { zh: '仅 @', en: '@ only' }
@@ -96,6 +106,8 @@ export const gitlabKind: SourceKind<GitlabConfig> = {
       { key: 'DSH_SUPERAGENT_GITLAB_PROJECT', description: { zh: '这个来源监听的项目，group/name。智能体在这里开的 MR，源分支最后一段是 DSH_SUPERAGENT_NAME 时（例如 agent/$DSH_SUPERAGENT_NAME）会关联到工单', en: 'The project this Source watches, as group/name. An MR the agent opens here from a branch whose last path segment is DSH_SUPERAGENT_NAME (for example agent/$DSH_SUPERAGENT_NAME) binds to the ticket' } },
       { key: 'DSH_SUPERAGENT_GITLAB_PROJECT_ID', description: { zh: '项目的数字 id，glab api 的 projects/<id>/… 路径用它', en: 'The project\'s numeric id, which glab api paths projects/<id>/… take' } },
       { key: 'DSH_SUPERAGENT_GITLAB_ACCOUNT', description: { zh: '智能体的 GitLab 用户名；glab 以它登录，GitLab 操作都用 glab，不用其他账号或凭据', en: 'The agent\'s GitLab username. glab is signed in to it; use glab for every GitLab operation, and never another account or credential' } },
+      { key: 'DSH_SUPERAGENT_GITLAB_IDENTITY', description: { zh: 'dedicated：glab 登录的是智能体自己的账号；personal：是一个人的账号，智能体写的内容由 dsh-superagent 标记和署名，没有标记的是那个人自己写的', en: 'dedicated: glab is signed in to the agent\'s own account; personal: to a person\'s own account, where dsh-superagent marks and signs what the agent writes and a note of the account without the mark is the person\'s own' } },
+      { key: 'DSH_SUPERAGENT_GITLAB_TRIGGER', description: { zh: 'personal 时，人在行首写这个词加冒号来找智能体', en: 'With personal, people address the agent by this word and a colon at a line start' } },
       { key: 'DSH_SUPERAGENT_GITLAB_COMMIT_EMAIL', description: { zh: '智能体账号的提交邮箱。这里的 git 没有身份：按提示词写明的作者提交，没有写明时用智能体账号和这个邮箱', en: 'Commit email of the agent\'s account. git has no identity here: commit as the author these instructions name, or as the agent\'s account with this email when they name none' } },
       { key: 'DSH_SUPERAGENT_GITLAB_ISSUE_IID', description: { zh: '接下工单的 Issue 的编号（iid）；工单不是从 GitLab Issue 来的时为空', en: 'iid of the Issue that started the ticket; empty when the ticket did not start on a GitLab Issue' } },
       { key: 'DSH_SUPERAGENT_GITLAB_MR_IID', description: { zh: '接下工单的 MR 的编号（iid）；工单不是从 GitLab MR 来的时为空', en: 'iid of the merge request that started the ticket; empty when the ticket did not start on a GitLab MR' } },
@@ -107,14 +119,38 @@ export const gitlabKind: SourceKind<GitlabConfig> = {
       const isMr = iid > 0 && trigger?.meta.isMr === true
       return { DSH_SUPERAGENT_GITLAB_URL: gitlab?.url ?? '', DSH_SUPERAGENT_GITLAB_PROJECT: gitlab ? deployment.repository : '',
         DSH_SUPERAGENT_GITLAB_PROJECT_ID: gitlab ? String(gitlab.projectId) : '', DSH_SUPERAGENT_GITLAB_ACCOUNT: gitlab?.login ?? '',
+        DSH_SUPERAGENT_GITLAB_IDENTITY: gitlab?.identity ?? '', DSH_SUPERAGENT_GITLAB_TRIGGER: gitlab?.identity === 'personal' ? gitlab.trigger : '',
         DSH_SUPERAGENT_GITLAB_COMMIT_EMAIL: gitlab?.email ?? '', DSH_SUPERAGENT_GITLAB_ISSUE_IID: iid && !isMr ? String(iid) : '',
         DSH_SUPERAGENT_GITLAB_MR_IID: isMr ? String(iid) : '', DSH_SUPERAGENT_GITLAB_MR_HEAD: isMr ? `refs/merge-requests/${iid}/head` : '' }
     },
   },
   facts: (deployment): Record<string, Localized | string> => deployment?.gitlab ? {
-    cli: { zh: `当前账号 @${deployment.gitlab.login}`, en: `Current account @${deployment.gitlab.login}` },
+    ...personalFacts(deployment.gitlab),
+    cli: deployment.gitlab.identity === 'personal'
+      ? { zh: `本人账号 @${deployment.gitlab.login}，智能体写的内容带标记和署名`, en: `Own account @${deployment.gitlab.login}; what the agent writes is marked and signed` }
+      : { zh: `当前账号 @${deployment.gitlab.login}`, en: `Current account @${deployment.gitlab.login}` },
     project: { zh: `项目 id ${deployment.gitlab.projectId}`, en: `Project id ${deployment.gitlab.projectId}` },
   } : {},
+}
+/** Days before a token's expiry from which the panel warns. */
+const EXPIRY_WARNING_DAYS = 14
+/** `YYYY-MM-DD` expiry within `EXPIRY_WARNING_DAYS` of now (a token stops working at midnight UTC of that date), or past it. */
+const expiring = (date: string | undefined, now = Date.now()): boolean =>
+  !!date && Date.parse(`${date}T00:00:00Z`) - now < EXPIRY_WARNING_DAYS * 86_400_000
+/**
+ * Under `personal`: a warning when the account is a Maintainer or more, whose role lets the worker's token push to protected
+ * branches; when either token expires soon; and when GitLab did not report the tokens' scopes.
+ */
+function personalFacts(gitlab: NonNullable<Deployment['gitlab']>): Record<string, Localized> {
+  if (gitlab.identity !== 'personal') return {}
+  const facts: Record<string, Localized> = {}
+  const notes: Localized[] = []
+  if (gitlab.accessLevel >= MAINTAINER) notes.push({ zh: '你在项目里是 Maintainer 或更高：执行器的令牌能推送受保护分支，建议把默认分支设为不允许直接推送。', en: 'You are a Maintainer or more in the project: the Executor token can push to protected branches; consider allowing no direct pushes to the default branch.' })
+  if (gitlab.tokenUnchecked) notes.push({ zh: 'GitLab 没有报告令牌的权限和到期日（需要 GitLab 15.5 或更新）；请自己确认执行器的令牌只有 read_api 和 write_repository。', en: 'GitLab did not report the tokens\' scopes and expiry (this needs GitLab 15.5 or later); check yourself that the Executor token has only read_api and write_repository.' })
+  if (notes.length) facts.identity = { zh: notes.map(note => note.zh).join(' '), en: notes.map(note => note.en).join(' ') }
+  const soon = [expiring(gitlab.expiresAt) && `cli ${gitlab.expiresAt}`, expiring(gitlab.workerExpiresAt) && `workerCli ${gitlab.workerExpiresAt}`].filter(Boolean).join(', ')
+  if (soon) facts.workerCli = { zh: `令牌快到期或已到期（${soon}）：建新令牌，重新登录对应的 glab，然后重新检查。`, en: `Tokens expire soon or have expired (${soon}): create new ones, sign the matching glab in again, then check again.` }
+  return facts
 }
 export const name = 'dsh-superagent-gitlab'
 export const inject = ['orchestrator']
@@ -211,7 +247,7 @@ async function pollStream(ctx: SourceContext, round: Round, stream: 'issues' | '
   const since = new Date(Math.max(Date.parse(stored), Date.parse(round.started) - POLL_HORIZON_MS)).toISOString()
   const path = `${stream}?updated_after=${encodeURIComponent(since)}&order_by=updated_at&sort=asc&per_page=100`
   const items = await ctx.commands.withSignal(round.signal).gitlabPages(ItemSchema, path, round.tally)
-  const { login } = gitlabOf(ctx.deployment)
+  const gitlab = gitlabOf(ctx.deployment)
   let held: string | undefined
   for (const item of items) {
     // Stopping mid-list aborts before moving the cursor, so the unread items are read again.
@@ -219,10 +255,15 @@ async function pollStream(ctx: SourceContext, round: Round, stream: 'issues' | '
     const thread = threadId(isMr, item.iid)
     try {
       const ref: ItemRef = { iid: item.iid, isMr, url: item.web_url }
-      if (isMr) ref.mrAuthor = (await mr(ctx, round, item.iid)).author.username
-      const opened = Date.parse(item.created_at) >= Date.parse(since) && !sameName(item.author.username, login)
-      if (opened && (mentions(item.description ?? '', login) || config[isMr ? 'observeMergeRequests' : 'observeIssues'])) {
-        await ctx.receive(itemTrigger(item, isMr, login))
+      const read = isMr ? await mr(ctx, round, item.iid) : undefined
+      if (read) ref.mrAuthor = read.author.username
+      // An MR on a ticket's branch is the agent's even before the host marked its description (see `agentMr`).
+      const fromAgent = byAgent(item.author.username, read?.description ?? item.description, gitlab)
+        || (!!read && gitlab.identity === 'personal' && agentMr(read, ctx.deployment, ctx.tickets.open()))
+      const opened = Date.parse(item.created_at) >= Date.parse(since) && !fromAgent
+      if (opened && (itemAddressed(item, gitlab) || config[isMr ? 'observeMergeRequests' : 'observeIssues'])) {
+        const trigger = itemTrigger(item, isMr, gitlab)
+        if (!trigger.meta.ownerOnly) await ctx.receive(trigger)
       }
       nameThread(ctx, item, isMr)
       const subscribed = !!ctx.threads.get(`${SOURCE}:${thread}`)?.subscriptions.length
@@ -250,21 +291,26 @@ function mr(ctx: SourceContext, round: Round, iid: number): Promise<Mr> {
   return read
 }
 /**
- * Receives the notes of an Issue's or MR's discussions written since `since`: all of them with `all`; otherwise those that mention
- * the agent, and the review decisions on the agent's MRs. The agent's own notes and other system notes make no Trigger.
+ * Receives the notes of an Issue's or MR's discussions written since `since`: all of them with `all`; otherwise those that address
+ * the agent, and the review decisions on the agent's MRs. The agent's own notes and other system notes make no Trigger, and
+ * under `personal` neither does a note that only asks the person, outside a discussion the agent took part in.
  */
 async function intakeNotes(ctx: SourceContext, round: Round, ref: ItemRef, since: string, all: boolean): Promise<void> {
   const item = `${ref.isMr ? 'merge_requests' : 'issues'}/${ref.iid}`
   const discussions = await ctx.commands.withSignal(round.signal).gitlabPages(DiscussionSchema, `${item}/discussions?per_page=100`, round.tally)
-  const { login } = gitlabOf(ctx.deployment)
-  const mine = !!ref.mrAuthor && sameName(ref.mrAuthor, login)
+  const gitlab = gitlabOf(ctx.deployment)
+  const mine = gitlab.identity === 'personal'
+    ? ref.isMr && ctx.tickets.open().some(ticket => ticket.follows?.some(item => item.own && item.thread === `${SOURCE}:${threadId(true, ref.iid)}`))
+    : !!ref.mrAuthor && byAgent(ref.mrAuthor, '', gitlab)
   for (const discussion of discussions) {
-    for (const note of validItems(NoteSchema, discussion.notes, round.tally)) {
+    const notes = validItems(NoteSchema, discussion.notes, round.tally)
+    const joined = notes.some(note => noteKind(note) !== 'review' && byAgent(note.author.username, note.body, gitlab))
+    for (const note of notes) {
       // Stopping mid-read throws so the Thread's cursor stays where it was.
       if (stopped(ctx, round)) throw new Error('The GitLab Source stopped during the poll')
       if (!(Date.parse(note.created_at) >= Date.parse(since))) continue
-      const trigger = noteTrigger(note, discussion, ref, login)
-      if (!trigger) continue
+      const trigger = noteTrigger(note, discussion, ref, gitlab)
+      if (!trigger || (trigger.meta.ownerOnly && !joined)) continue
       if (all || trigger.addressed || (mine && noteKind(note) === 'review')) await ctx.receive(trigger)
     }
   }

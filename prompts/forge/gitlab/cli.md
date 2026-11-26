@@ -3,7 +3,8 @@ Subscription controls push delivery, not CLI read access.
 The orchestrator uses orchestrator_eval_read for proactive assessment.
 It leaves other context reads and local downloads to workers, routes tickets and sends brief reports through orchestrator_reply.
 Do not alter remote state, authorization, or configuration while reading.
-Use glab for every GitLab call; it reaches the deployment's GitLab server, so use `glab api` with an explicit API path such as `projects/$DSH_SUPERAGENT_GITLAB_PROJECT_ID/...`, or `--repo $DSH_SUPERAGENT_GITLAB_URL/$DSH_SUPERAGENT_GITLAB_PROJECT` for other commands.
+Use glab for every GitLab read; it reaches the deployment's GitLab server, so use `glab api` with an explicit API path such as `projects/$DSH_SUPERAGENT_GITLAB_PROJECT_ID/...`, or `--repo $DSH_SUPERAGENT_GITLAB_URL/$DSH_SUPERAGENT_GITLAB_PROJECT` for other commands.
+Write to GitLab only with the gitlab_* tools, never with glab.
 `glab api` has no --jq option: write its output to a file and read or filter it there, and add `--paginate --output ndjson` for lists.
 The watcher remains limited to the deployment's project; linked context may be read elsewhere.
 Feishu uses --as bot; unavailable content does not authorize switching to the user's identity.

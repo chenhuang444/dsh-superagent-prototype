@@ -3,6 +3,7 @@ import { z } from 'zod'
 import type { OutboundMessage } from '../core/index.ts'
 import { CliError } from '../infra/commands.ts'
 import { sameName } from '../infra/text.ts'
+import { markerOf, signedBody } from './gitlab-identity.ts'
 import { gitlabOf } from '../deployment.ts'
 import type { SourceContext } from './host.ts'
 import type { ChannelLink, ChannelLinks } from './kind.ts'
@@ -14,16 +15,18 @@ const gone = (error: unknown): boolean => error instanceof CliError && error.cod
 const missing = (error: unknown): boolean => error instanceof CliError && error.code === 404
 /**
  * Posts a note once per message id: into the address's discussion when it names one (a top-level note when that discussion
- * was deleted), else on the Issue or MR. A hidden marker in the body lets a retry find a note an earlier attempt posted.
+ * was deleted), else on the Issue or MR. A hidden marker in the body lets a retry find a note an earlier attempt posted; under
+ * `personal` a visible signature above it says the agent wrote it, in the language of the message.
  */
 export async function sendGitlab(host: Pick<SourceContext, 'commands'>, message: OutboundMessage): Promise<'sent' | 'gone'> {
   const { commands } = host
-  const { login } = gitlabOf(commands.deployment)
+  const gitlab = gitlabOf(commands.deployment)
+  const { login } = gitlab
   const { kind, iid, discussion } = message.channel.address
   if ((kind !== 'issue' && kind !== 'mr') || !/^[1-9]\d*$/.test(iid ?? '')) throw new Error('Missing GitLab reply target')
   const item = `${kind === 'mr' ? 'merge_requests' : 'issues'}/${iid}`
-  const marker = `<!-- dsh-superagent:${message.id} -->`
-  const body = `body=${message.text}\n\n${marker}`
+  const marker = markerOf(message.id)
+  const body = `body=${signedBody(gitlab, message.id, message.text)}`
   try {
     // The notes of an Issue or MR include those in its discussions, so one list finds an earlier attempt wherever it went.
     const notes = await commands.gitlabPages(NoteSchema, `${item}/notes?per_page=100`)

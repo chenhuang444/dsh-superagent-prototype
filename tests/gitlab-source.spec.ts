@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { key, type Trigger } from '../src/core/index.ts'
 import { KV } from '../src/kv.ts'
 import { apply, gitlabKind, pollRound, pollThreads } from '../src/sources/gitlab.ts'
@@ -6,7 +6,8 @@ import { apply as applyGithub } from '../src/sources/github.ts'
 import { SourceRegistry } from '../src/sources/registry.ts'
 import { HealthBoard } from '../src/infra/health.ts'
 import { SettingsSchema } from '../src/policy.ts'
-import { testDeployment } from './fixtures/deployment.ts'
+import { testDeployment, testGitlab, testGitlabDeployment } from './fixtures/deployment.ts'
+import { markerOf } from '../src/sources/gitlab-identity.ts'
 import { agentMr, diffNote, discussion, execution, gitlabHost, glab, issue, mr, note, refused, ticket, type GitlabHost } from './fixtures/gitlab.ts'
 
 // The payloads are of 2026-09-09; the rounds run the next day, within the polling horizon.
@@ -179,4 +180,65 @@ it('keeps the GitHub Source off on a GitLab deployment', async () => {
   await vi.waitFor(() => expect(board.all.github).toMatchObject({ state: 'paused', code: 'notForge' }))
   for (const dispose of disposers) await dispose()
   h.store.close()
+})
+
+describe('personal identity', () => {
+  const personal = testGitlabDeployment({ gitlab: testGitlab({ identity: 'personal', login: 'alice', workerCli: '/bin/false' }) })
+  const host = (config: Record<string, unknown> = {}) => {
+    const h = gitlabHost(config, { deployment: personal })
+    vi.spyOn(h.commands, 'deployment', 'get').mockReturnValue(personal)
+    return h
+  }
+
+  it('takes the person\'s own notes and summons, skips the agent\'s marked notes and notes only for the person', async () => {
+    const h = host()
+    started(h)
+    const notes = [note(1, 'alice', 'agent: please fix the login'), note(2, 'alice', `On it.\n\n${markerOf('m1')}`),
+      note(3, 'bob', '@alice can you look?'), note(4, 'bob', '@alice agent: change the label'), note(5, 'alice', '@agent-bot old style')]
+    glab(h.commands, { issues: [issue(12, { description: 'details' })],
+      'issues/12/discussions': notes.map((item, index) => discussion(`d${index}abcdef`, [item])) })
+    await pollRound(h.ctx)
+    expect(taken(h).map(trigger => trigger.id)).toEqual([key('gitlab-note', 'issue:12', '1'), key('gitlab-note', 'issue:12', '4')])
+    expect(taken(h)[0]).toMatchObject({ human: true, addressed: 'mention', actor: { id: 'alice' } })
+    h.store.close()
+  })
+
+  it('reads every note of a subscribed Thread but drops one only for the person outside the agent\'s discussions', async () => {
+    const h = host()
+    h.store.tickets.save(ticket('t1', { execution: execution('t1') }))
+    h.store.threads.save({ key: 'gitlab:issue:12', ref: { source: 'gitlab', id: 'issue:12' }, createdAt: SINCE, lastAt: new Date().toISOString(),
+      subscriptions: ['t1'], correlated: [], pending: [], meta: {} })
+    const agentReply = note(2, 'alice', `Which one?\n\n${markerOf('m2')}`)
+    glab(h.commands, { 'issues/12': issue(12), 'issues/12/discussions': [
+      discussion('aaaa1111', [note(1, 'bob', '@alice you around?')]),
+      discussion('bbbb2222', [note(3, 'carol', 'the button'), agentReply, note(4, 'bob', '@alice this one')], true)] })
+    await pollThreads(h.ctx)
+    expect(taken(h).map(trigger => trigger.meta.noteId)).toEqual([3, 4])
+    h.store.close()
+  })
+
+  it('treats an MR of the person\'s account on a ticket branch as the agent\'s, signs it and withdraws auto-merge', async () => {
+    const h = host({ observeMergeRequests: true })
+    started(h)
+    h.store.tickets.save(ticket('t1', { execution: execution('t1') }))
+    const opened = mr(30, { author: { id: 1, username: 'alice' }, source_branch: 'agent/t1', description: 'pushed with -o', merge_when_pipeline_succeeds: true })
+    const api = glab(h.commands, { merge_requests: [opened], 'merge_requests/30': (flags: string[]) => flags.includes('PUT') ? {} : opened,
+      'merge_requests/30/cancel_merge_when_pipeline_succeeds': {} })
+    await pollRound(h.ctx)
+    expect(taken(h).map(trigger => trigger.id)).not.toContain(key('gitlab-mr', '30'))
+    expect(api.calls.some(call => call.path === 'merge_requests/30/cancel_merge_when_pipeline_succeeds')).toBe(true)
+    const put = api.calls.find(call => call.path === 'merge_requests/30' && call.flags.includes('PUT'))!
+    expect(put.flags.find(flag => flag.startsWith('description='))).toContain(markerOf('mr-30'))
+    h.store.close()
+  })
+})
+
+it('warns under personal of a Maintainer role, unreported scopes and tokens about to expire', () => {
+  const soon = new Date(Date.now() + 3 * 86_400_000).toISOString().slice(0, 10)
+  const facts = gitlabKind.facts!(testGitlabDeployment({ gitlab: testGitlab({ identity: 'personal', workerCli: '/bin/false', accessLevel: 40,
+    tokenUnchecked: true, expiresAt: '2027-12-31', workerExpiresAt: soon }) }))
+  expect(facts.identity).toMatchObject({ en: expect.stringContaining('Maintainer') })
+  expect((facts.identity as { en: string }).en).toContain('15.5')
+  expect(facts.workerCli).toMatchObject({ en: expect.stringContaining(`workerCli ${soon}`) })
+  expect(gitlabKind.facts!(testGitlabDeployment({ gitlab: testGitlab({ accessLevel: 40 }) })).identity).toBeUndefined()
 })

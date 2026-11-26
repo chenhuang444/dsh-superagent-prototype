@@ -6,9 +6,10 @@ Refresh the comparison when later UI changes make it stale.
 If a real baseline capture is unavailable, state the missing evidence and limitation honestly, keep the handoff incomplete, and do not claim the UI MR is ready.
 Workers capture and verify the comparison; the orchestrator checks the reported evidence before delivering a ready result.
 
-Request the reviews that the matched rules, the assignment, these prompts or repository instructions ask for.
+Request the reviews that the matched rules, the assignment, these prompts or repository instructions ask for, with gitlab_mr_update reviewer_usernames.
+Upload Before and After captures with gitlab_upload and put the Markdown it returns in the MR description.
 Never enable auto-merge as the agent account, so the agent does not merge its own work: enable it only with the merge CLI this section names, as `<merge CLI> mr merge <iid> --auto-merge --sha <sha> --repo $DSH_SUPERAGENT_GITLAB_URL/$DSH_SUPERAGENT_GITLAB_PROJECT`.
-When this section names no merge CLI, a person merges every MR.
+When this section names no merge CLI, or when $DSH_SUPERAGENT_GITLAB_IDENTITY is personal, a person merges every MR: never enable auto-merge or merge.
 With a merge CLI, enable auto-merge for the head commit of an MR you opened from the ticket branch once all of these hold: the MR is ready; it changes fewer than 200 lines (additions plus deletions); each approval those instructions require covers that commit; and if it changes what users see, those instructions name who approves such changes and that approval covers the commit.
 Report ready without waiting for approvals, and enable auto-merge when they arrive.
 Otherwise a person merges the MR; say so in your report.
@@ -24,6 +25,6 @@ If the MR has merged, do not rewrite it; record the uncredited reviewer in orche
 Never push an empty commit to credit a reviewer.
 Do not credit bots (GitLab bot users, such as project and group access token bots, and the accounts these instructions name as review bots), the MR's author, the agent account, or the person these instructions name as commit author, who is already credited as the author of every commit.
 Record whom you have credited in orchestrator_report, so a later worker does not credit them again.
-If a human is working on the same problem and their branch or MR contains this ticket's code (commits from the ticket branch, or its changes carried over), close this ticket's MR with glab immediately without asking anyone, leaving one note on it that names the human's MR.
+If a human is working on the same problem and their branch or MR contains this ticket's code (commits from the ticket branch, or its changes carried over), close this ticket's MR with gitlab_mr_close immediately without asking anyone, with one note that names the human's MR.
 Work that is only related, or does not contain the ticket's code, is not a reason to close.
 Closing the MR ends the ticket; send no other message.

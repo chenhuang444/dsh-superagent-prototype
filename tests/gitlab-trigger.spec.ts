@@ -1,3 +1,4 @@
+import { AGENT } from './fixtures/gitlab-identity.ts'
 import { expect, it } from 'vitest'
 import { key } from '../src/core/index.ts'
 import { gitlabKind } from '../src/sources/gitlab.ts'
@@ -11,44 +12,44 @@ const individual = { id: 'aaaa1111', individual_note: true }
 const threaded = { id: 'bbbb2222', individual_note: false }
 
 it('translates a note into a Trigger on its Issue or MR, with a reply address in its discussion', () => {
-  const trigger = noteTrigger(NoteSchema.parse(note(5, 'alice', '@agent-bot please fix')), individual, ref(12), 'agent-bot')!
+  const trigger = noteTrigger(NoteSchema.parse(note(5, 'alice', '@agent-bot please fix')), individual, ref(12), AGENT)!
   expect(trigger).toEqual({ id: key('gitlab-note', 'issue:12', '5'), source: 'gitlab', threads: [{ source: 'gitlab', id: 'issue:12' }],
     actor: { source: 'gitlab', id: 'alice' }, human: true, at: '2026-09-09T00:00:05Z', text: '@agent-bot please fix', addressed: 'mention',
     channel: gitlabChannel(false, 12, undefined, `${WEB}/-/issues/12#note_5`), url: `${WEB}/-/issues/12#note_5`,
     meta: { iid: 12, isMr: false, kind: 'note', noteId: 5, discussionId: 'aaaa1111' } })
   expect(trigger.channel!.address).toEqual({ kind: 'issue', iid: '12', url: `${WEB}/-/issues/12#note_5` })
   // A note in a threaded discussion is answered in that discussion.
-  const reply = noteTrigger(NoteSchema.parse(note(6, 'alice', 'more')), threaded, ref(34, true), 'agent-bot')!
+  const reply = noteTrigger(NoteSchema.parse(note(6, 'alice', 'more')), threaded, ref(34, true), AGENT)!
   expect(reply).toMatchObject({ threads: [{ id: 'mr:34' }], channel: { thread: 'gitlab:mr:34', address: { kind: 'mr', iid: '34', discussion: 'bbbb2222' } } })
   expect(reply).not.toHaveProperty('addressed')
 })
 
 it('keeps Issue and MR ids apart, as their iids are separate sequences', () => {
-  const opened = itemTrigger(ItemSchema.parse(issue(12, { description: 'Ping @agent-bot' })), false, 'agent-bot')
-  const merge = itemTrigger(ItemSchema.parse(mr(12)), true, 'agent-bot')
+  const opened = itemTrigger(ItemSchema.parse(issue(12, { description: 'Ping @agent-bot' })), false, AGENT)
+  const merge = itemTrigger(ItemSchema.parse(mr(12)), true, AGENT)
   expect(opened).toMatchObject({ id: key('gitlab-issue', '12'), threads: [{ id: 'issue:12' }], text: 'Login fails\n\nPing @agent-bot',
     addressed: 'mention', meta: { iid: 12, isMr: false, kind: 'issue' } })
   expect(merge).toMatchObject({ id: key('gitlab-mr', '12'), threads: [{ id: 'mr:12' }], meta: { iid: 12, isMr: true, kind: 'mr', mrAuthor: 'carol' } })
   expect(opened.id).not.toBe(merge.id)
-  expect(noteTrigger(NoteSchema.parse(note(5, 'a', 'x')), individual, ref(12), 'agent-bot')!.id)
-    .not.toBe(noteTrigger(NoteSchema.parse(note(5, 'a', 'x')), individual, ref(12, true), 'agent-bot')!.id)
+  expect(noteTrigger(NoteSchema.parse(note(5, 'a', 'x')), individual, ref(12), AGENT)!.id)
+    .not.toBe(noteTrigger(NoteSchema.parse(note(5, 'a', 'x')), individual, ref(12, true), AGENT)!.id)
 })
 
 it('starts a diff note with its file and line, and keeps both in meta', () => {
-  const trigger = noteTrigger(NoteSchema.parse(diffNote(7, 'carol', 'Use the theme token')), threaded, ref(34, true), 'agent-bot')!
+  const trigger = noteTrigger(NoteSchema.parse(diffNote(7, 'carol', 'Use the theme token')), threaded, ref(34, true), AGENT)!
   expect(trigger.text).toBe('src/render.ts:43\n\nUse the theme token')
   expect(trigger.meta).toMatchObject({ kind: 'diff', path: 'src/render.ts', line: 43, discussionId: 'bbbb2222' })
 })
 
 it('makes review decisions of system notes Triggers, and no Trigger of other system notes or the agent\'s own notes', () => {
   const system = (body: string) => NoteSchema.parse(note(8, 'carol', body, { system: true }))
-  expect(noteTrigger(system('approved this merge request'), individual, ref(34, true), 'agent-bot')).toMatchObject({ text: 'approved this merge request',
+  expect(noteTrigger(system('approved this merge request'), individual, ref(34, true), AGENT)).toMatchObject({ text: 'approved this merge request',
     meta: { kind: 'review' } })
   expect(noteKind(system('requested changes'))).toBe('review')
   expect(noteKind(system('unapproved this merge request'))).toBe('review')
-  expect(noteTrigger(system('added 1 commit'), individual, ref(34, true), 'agent-bot')).toBeUndefined()
-  expect(noteTrigger(NoteSchema.parse(note(9, 'Agent-Bot', 'pushed')), individual, ref(34, true), 'agent-bot')).toBeUndefined()
-  expect(noteTrigger(NoteSchema.parse(note(10, 'alice', '')), individual, ref(34, true), 'agent-bot')).toBeUndefined()
+  expect(noteTrigger(system('added 1 commit'), individual, ref(34, true), AGENT)).toBeUndefined()
+  expect(noteTrigger(NoteSchema.parse(note(9, 'Agent-Bot', 'pushed')), individual, ref(34, true), AGENT)).toBeUndefined()
+  expect(noteTrigger(NoteSchema.parse(note(10, 'alice', '')), individual, ref(34, true), AGENT)).toBeUndefined()
 })
 
 it('marks bots, project access tokens and the Ghost User apart from people', () => {
@@ -57,7 +58,7 @@ it('marks bots, project access tokens and the Ghost User apart from people', () 
   expect(isHumanUser({ username: 'ci_bot' })).toBe(false)
   expect(isHumanUser({ username: 'project_42_bot_0123abcd' })).toBe(false)
   expect(isHumanUser({ username: 'group_7_bot' })).toBe(false)
-  expect(noteTrigger(NoteSchema.parse({ ...note(11, 'x', 'hi'), author: null }), individual, ref(1), 'agent-bot')!.actor.id).toBe('ghost')
+  expect(noteTrigger(NoteSchema.parse({ ...note(11, 'x', 'hi'), author: null }), individual, ref(1), AGENT)!.actor.id).toBe('ghost')
 })
 
 it('reads a mention of the agent in any case, and not inside an address or a longer name', () => {
@@ -100,12 +101,13 @@ it('scopes Triggers onto the admission rows the observe switches open', () => {
 it('gives a ticket from an MR its iid and head ref, and leaves the Issue variable empty', () => {
   const deployment = testGitlabDeployment()
   const config = gitlabKind.schema.parse({})
-  const fromMr = itemTrigger(ItemSchema.parse(mr(34)), true, 'agent-bot')
+  const fromMr = itemTrigger(ItemSchema.parse(mr(34)), true, AGENT)
   expect(gitlabKind.environment!.values({ deployment, config, trigger: fromMr })).toEqual({
     DSH_SUPERAGENT_GITLAB_URL: 'https://gitlab.example.com', DSH_SUPERAGENT_GITLAB_PROJECT: 'acme/widgets', DSH_SUPERAGENT_GITLAB_PROJECT_ID: '42',
-    DSH_SUPERAGENT_GITLAB_ACCOUNT: 'agent-bot', DSH_SUPERAGENT_GITLAB_COMMIT_EMAIL: 'agent-bot@example.com', DSH_SUPERAGENT_GITLAB_ISSUE_IID: '',
+    DSH_SUPERAGENT_GITLAB_ACCOUNT: 'agent-bot', DSH_SUPERAGENT_GITLAB_IDENTITY: 'dedicated', DSH_SUPERAGENT_GITLAB_TRIGGER: '',
+    DSH_SUPERAGENT_GITLAB_COMMIT_EMAIL: 'agent-bot@example.com', DSH_SUPERAGENT_GITLAB_ISSUE_IID: '',
     DSH_SUPERAGENT_GITLAB_MR_IID: '34', DSH_SUPERAGENT_GITLAB_MR_HEAD: 'refs/merge-requests/34/head' })
-  const fromIssue = gitlabKind.environment!.values({ deployment, config, trigger: itemTrigger(ItemSchema.parse(issue(12)), false, 'agent-bot') })
+  const fromIssue = gitlabKind.environment!.values({ deployment, config, trigger: itemTrigger(ItemSchema.parse(issue(12)), false, AGENT) })
   expect(fromIssue).toMatchObject({ DSH_SUPERAGENT_GITLAB_ISSUE_IID: '12', DSH_SUPERAGENT_GITLAB_MR_IID: '', DSH_SUPERAGENT_GITLAB_MR_HEAD: '' })
   expect(Object.values(gitlabKind.environment!.values({ deployment: { ...deployment, gitlab: undefined }, config })).every(value => value === '')).toBe(true)
   expect(gitlabKind.facts!(deployment)).toMatchObject({ cli: { en: 'Current account @agent-bot' } })

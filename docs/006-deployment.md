@@ -70,6 +70,42 @@ On GitLab, the agent is a user on the operator's own GitLab instance; `https://g
 
    By default glab keeps the token in the operating system's keyring when one is available. glab keys keyring entries by host and does not separate them by `GLAB_CONFIG_DIR`, so a token the operator's own glab keeps there for the same host would collide with the agent's. Add `--insecure-storage` to the login when the operator's own glab uses the same host, or when the keyring is not available to the service, for example in a tmux session started over SSH on Linux: the token is then kept in plain text in `~/.config/glab-agent/config.yml`, which glab writes readable only by the operator's user. Prefer the keyring when neither applies.
 
+### Personal access token mode (GitLab)
+
+Use this mode only when the project cannot have an account of the agent's own: creating a user needs an administrator, and a project or group access token needs the Maintainer role. In personal mode the agent works under the operator's own GitLab account. Set **Identity** to `personal` on the GitLab Source; the default, `dedicated`, keeps the account above.
+
+1. As yourself, create two legacy personal access tokens, each with an expiry date about 90 days ahead:
+   - `superagent-host` with the scope `api`. Only dsh-superagent itself uses it: polling, and every note, merge request and discussion change the agent makes.
+   - `superagent-worker` with exactly `read_api` and `write_repository` (`read_repository` and `read_user` are allowed too). Workers use it: they read the API and push branches, and GitLab refuses their API writes, so everything they post goes through dsh-superagent's tools.
+2. Give each token a glab with its own configuration, as in step 3 above:
+
+   ```sh
+   for name in glab-agent glab-agent-worker; do
+     printf '#!/bin/sh\nexport GLAB_CONFIG_DIR="$HOME/.config/%s"\nexec glab "$@"\n' "$name" > ~/.local/bin/$name
+     chmod +x ~/.local/bin/$name
+   done
+   glab-agent auth login --hostname gitlab.example.com --stdin < host-token.txt && rm host-token.txt
+   glab-agent-worker auth login --hostname gitlab.example.com --stdin < worker-token.txt && rm worker-token.txt
+   ```
+
+   The keyring note above applies to both, and more so here: your own glab, `glab-agent` and `glab-agent-worker` all sign in to the same host, so add `--insecure-storage` to both logins unless your own glab keeps its token in a file.
+3. On the GitLab Source, set **Identity** to `personal`, **glab** to `/home/me/.local/bin/glab-agent`, **Worker glab** to `/home/me/.local/bin/glab-agent-worker`, and **Trigger** to the word that addresses the agent (`agent` by default). Put your own username on the GitLab allowed list.
+
+Setup checks that both glabs are signed in to the same account, that the host token has `api`, and that the worker token has `read_api` and `write_repository` and nothing broader. It reads both tokens' expiry dates; the panel warns before they expire. GitLab before 15.5 cannot report a token, so setup then skips these checks and says so. The worker glab is required: personal mode has no single-token form, because a worker posting with the host token would write notes the agent cannot tell from yours.
+
+**Using it.** People address the agent with a line that starts with the trigger word and a colon, after any mentions: `agent: fix the spacing`, or `@lisi agent: fix the spacing`. `@<your username>` alone addresses you, not the agent. Everything the agent posts ends with a small line saying that DSH superagent posted it for you and how to address the agent, followed by a hidden marker by which dsh-superagent recognizes its own notes.
+
+**Limits.**
+
+- The host token reaches every project you can reach; only dsh-superagent's own process holds it. The worker token can read every project you can read.
+- `write_repository` accepts git push options, which can change a merge request's title, description, labels and auto-merge. Workers are told not to use them, and dsh-superagent turns auto-merge back off when a push enabled it.
+- GitLab's audit log, push events and pipelines show you, and pipelines run with your role. If you are a Maintainer, the panel warns: protect the default branch so that nobody pushes to it directly.
+- GitLab does not notify you of your own actions, so you get no notification of the agent's notes; follow its progress in the panel or Feishu. Each discussion the agent posts in makes you a participant, so you get notified of later replies there, and a person the agent mentions sees the mention as yours.
+- GitLab CE has no approval rules, so nothing stops you from approving and merging the agent's merge requests yourself: agree in the team that someone else approves them.
+- Workers' git runs a pre-push guard from `<stateDir>/worker-hooks`, which refuses tags, deleting remote branches and pushing to the remote's default branch. It is a guardrail, not a boundary: a repository whose own configuration sets `core.hooksPath`, or `git push --no-verify`, skips it.
+
+**Rotation.** Before a token expires, create a new one with the same scopes, sign the matching glab in again with it, and check setup again from the panel.
+
 ### Feishu bot (optional)
 
 1. Create a self-built app with the bot capability. Grant it the permissions to receive message events, read and send chat messages, and read chat members, then publish the app version.
@@ -247,7 +283,7 @@ curl -s -X PUT -H 'x-orchestrator-request: 1' -H 'content-type: application/json
 
 A deployment works on one code host. With `forge: gitlab` on the `dsh-superagent` entry, the GitLab Source takes the GitHub Source's place: it polls the project's Issues and merge requests and replies on them, and the agent delivers its work as merge requests. The GitHub Source, if it stays enabled, reports *Off: not this deployment's code host* and polls nothing. GitLab has no notifications the agent can read, so the Source reads the Issues and merge requests updated since its last poll, every minute by default, with their discussions. Issues are `#<iid>` and merge requests `!<iid>`; the two are numbered separately.
 
-1. **Account.** Create the agent user, its token and its glab wrapper, as in Agent GitLab account above.
+1. **Account.** Create the agent user, its token and its glab wrapper, as in Agent GitLab account above, or, without one, your own two tokens as in Personal access token mode.
 2. **Profile.** Set `forge: gitlab` on the `dsh-superagent` entry, enable `dsh-superagent-gitlab` (`disabled: false`) and disable `dsh-superagent-github` (`disabled: true`), as the comments in [examples/profile.cordis.patch.yml](../examples/profile.cordis.patch.yml) show.
 3. **GitLab Source.** In **Settings → Sources → GitLab**, set the address (`https://gitlab.example.com`, or with a port, without a path or a trailing slash), the project as `group/name` with every subgroup, and the agent's glab, for example `/home/me/.local/bin/glab-agent`. Saving checks the account, the project and the agent's role, then restarts dsh-superagent.
 4. **Policy.** Under **On each Source → GitLab**, list the GitLab usernames that may ask for work, and the bots whose messages may become candidates. GitLab's bots are bot users, such as the users of project and group access tokens; a CI or review bot that runs under an ordinary user counts as a person unless it is on the bot list.
@@ -258,7 +294,7 @@ A deployment works on one code host. With `forge: gitlab` on the `dsh-superagent
    git -C /home/me/src/widgets worktree add -b "agent/$DSH_SUPERAGENT_NAME" "$DSH_SUPERAGENT_DIR" "refs/dsh-superagent/$DSH_SUPERAGENT_TICKET"
    ```
 
-A person asks for work by writing `@<agent username>` in a new Issue, a merge request description or a note, including a note on a diff. A note in a discussion is answered in that discussion. A merge request the agent opens from its project, on a branch whose last path segment is the Ticket's short name, binds to the Ticket, as does the merge request that started it; its notes, approvals, requests for changes and pipeline changes then reach the worker. The Ticket ends when the merge request merges or closes.
+A person asks for work by writing `@<agent username>` (in personal mode, a line that starts with `agent:`) in a new Issue, a merge request description or a note, including a note on a diff. A note in a discussion is answered in that discussion. A merge request the agent opens from its project, on a branch whose last path segment is the Ticket's short name, binds to the Ticket, as does the merge request that started it; its notes, approvals, requests for changes and pipeline changes then reach the worker. The Ticket ends when the merge request merges or closes.
 
 Auto-merge uses `glab mr merge <iid> --auto-merge --sha <sha>` of the account that the Delivery requirements name, never the agent's: GitLab merges once the pipeline succeeds, and only if the source branch's head is still `<sha>`. Withdrawing it cancels *merge when pipeline succeeds* through the API.
 
@@ -273,7 +309,7 @@ The process environment that setup writes:
 - **Command shims** in `<stateDir>/worker-bin`, first on `PATH`: `gh` runs the agent's CLI; `lark-cli` runs the bot's CLI; blocked commands fail. A shim removes its own directory from `PATH` before it runs its target.
 - **git configuration** in `<stateDir>/worker-gitconfig`: replaces the operator's global and system git configuration. It selects the agent CLI as the github.com credential helper, rewrites GitHub SSH addresses to HTTPS and defines Git LFS filters. Personal git settings such as an HTTP proxy do not apply. No commit identity is set here, git never prompts for credentials, and `GH_TOKEN` and `GITHUB_TOKEN` are removed.
 
-On a GitLab deployment, `glab` runs the agent's glab with `GITLAB_HOST` set to the configured host; `gh` fails, saying to use `glab`, so a worker never reaches the operator's own `gh`; and the git configuration selects `glab auth git-credential` of the agent's glab as the credential helper of the GitLab address alone, rewrites `git@<host>:` and `ssh://git@<host>/` addresses to HTTPS, and holds nothing for github.com. `GITLAB_TOKEN`, `GITLAB_ACCESS_TOKEN`, `OAUTH_TOKEN`, `CI_JOB_TOKEN` and `GITLAB_HOST` are removed from the agent's environment, so glab uses only the wrapper's login. dsh-superagent's own glab calls pass `--hostname` and turn off glab's update check and prompts.
+On a GitLab deployment, `glab` runs the agent's glab (in personal mode the worker glab) with `GITLAB_HOST` set to the configured host; `gh` fails, saying to use `glab`, so a worker never reaches the operator's own `gh`; and the git configuration selects `glab auth git-credential` of the same glab as the credential helper of the GitLab address alone, rewrites `git@<host>:` and `ssh://git@<host>/` addresses to HTTPS, and holds nothing for github.com. `GITLAB_TOKEN`, `GITLAB_ACCESS_TOKEN`, `OAUTH_TOKEN`, `CI_JOB_TOKEN` and `GITLAB_HOST` are removed from the agent's environment, so glab uses only the wrapper's login. dsh-superagent's own glab calls pass `--hostname` and turn off glab's update check and prompts. In personal mode the git configuration also sets `core.hooksPath` to `<stateDir>/worker-hooks`, which holds the pre-push guard; each hook there runs the repository's own hook of the same name after it, so hooks such as Git LFS's keep working.
 
 A file in `worker-bin` or `worker-gitconfig` that dsh-superagent did not write stops setup. A Ticket directory inside a git repository whose own configuration adds credentials fails the Ticket.
 
@@ -322,6 +358,13 @@ Setup problems appear on the overview with a link to the fix, in the panel's lan
 | `@… cannot read …` (GitLab) or `The agent glab did not return …` | Add the agent user to the project, check the project's path, including subgroups, and that the token has the `api` and `read_repository` scopes |
 | `@… cannot push to …; it needs the Developer role or higher.` | Give the agent user the Developer role or higher on the project or its group |
 | `git does not read the https://… credential configuration dsh-superagent writes` | Install git 2.32 or later |
+| `Personal mode needs the worker glab, …` or `The worker glab was not found.` | Set the worker glab on the GitLab card, as in Personal access token mode |
+| `The worker glab cannot read its account on …` | Sign the worker glab in with its own token, `glab-agent-worker auth login --hostname <host> --stdin`; with the keyring, add `--insecure-storage` |
+| `The worker glab is signed in as @…, not @…` | Sign both glabs in to your own account, each with its own token |
+| `The agent glab's token has the scopes …` | Sign the agent glab in with a token that has `api` |
+| `The worker glab's token must have exactly read_api and write_repository …` | Create the worker token again with only `read_api` and `write_repository`, and sign the worker glab in with it |
+| `GitLab on … did not report the token of a glab.` | GitLab answered `personal_access_tokens/self` with an error other than 404; the output says which, often an expired or revoked token |
+| `dsh-superagent: push refused: …` (worker) | The pre-push guard of personal mode refused a tag, a deletion or the default branch; a person does those |
 | `The bot lark-cli allows user identities` | Point the Feishu Source at a bot-only configuration, as in Feishu bot above |
 | `The bot lark-cli does not work.` or `The bot identity of app … is …` | Check the configuration's app id and secret |
 | `The Feishu bot is not a member of the chat.` | Add the bot to the chat in the chat's settings; the next attempt succeeds |

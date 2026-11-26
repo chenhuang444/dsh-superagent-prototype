@@ -44,6 +44,12 @@ export interface ForgeEnvironment {
   blockedHint(input: ForgeEnvironmentInput): string
   /** Lines of the agent's git configuration that give this forge's credentials and URL rewrites; nothing else. */
   gitConfig(input: ForgeEnvironmentInput): string[]
+  /**
+   * The git hooks every worker's git runs, such as `pre-push`, with the shell body of each; when there are any, the agent's git
+   * configuration points `core.hooksPath` at the directory that holds them. A guardrail: a repository's own `core.hooksPath`
+   * or `--no-verify` skips them.
+   */
+  hooks?(input: ForgeEnvironmentInput): Shim[]
   /** Verifies that a worker's git resolves this forge's credential configuration. */
   verify(input: ForgeEnvironmentInput, subprocess: SubprocessRuntime, signal: AbortSignal): Promise<void>
 }

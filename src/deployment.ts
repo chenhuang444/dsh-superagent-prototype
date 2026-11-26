@@ -62,7 +62,15 @@ export const GitlabAccountsSchema = z.object({
   url: z.string().trim().regex(/^(https:\/\/[A-Za-z0-9.-]+(:\d+)?)?$/, 'https://host[:port], without a path or trailing slash').default(''),
   project: z.string().trim().regex(/^([A-Za-z0-9_.-]+(\/[A-Za-z0-9_.-]+)+)?$/, 'group/name').default(''),
   cli: z.string().trim().default(''),
+  identity: z.enum(['dedicated', 'personal']).default('dedicated'),
+  workerCli: z.string().trim().default(''),
+  trigger: z.string().trim().regex(/^[A-Za-z][A-Za-z0-9_-]{0,31}$/, 'a word of letters, digits, _ and -').default('agent'),
 })
+/**
+ * Whose GitLab account the agent's glab holds: `dedicated`, an account of the agent's own (a bot, or a user made for it);
+ * `personal`, the operator's own account, whose notes the agent tells apart from the operator's by a marker it adds.
+ */
+export type GitlabIdentityKind = z.infer<typeof GitlabAccountsSchema>['identity']
 /** Source configuration keys that setup reads, by Source; a change to one of the forge's or Feishu's restarts dsh-superagent. */
 const ACCOUNT_FIELDS: Readonly<Record<string, readonly string[]>> = { github: Object.keys(GithubAccountsSchema.shape),
   gitlab: Object.keys(GitlabAccountsSchema.shape), feishu: Object.keys(FeishuBotSchema.shape) }
@@ -110,6 +118,20 @@ export interface GitlabAccount {
   email: string
   /** The project's numeric id, which every API path uses. */
   projectId: number
+  /** Whose account `cli` is signed in to; see `GitlabIdentityKind`. */
+  identity: GitlabIdentityKind
+  /** With `personal`: the glab workers run, signed in to the same account with only `read_api` and `write_repository`. */
+  workerCli?: string
+  /** With `personal`: the word that, followed by a colon at the start of a line, addresses the agent. */
+  trigger: string
+  /** The account's role on the project (GitLab access level, the higher of project and group); 40 and above is Maintainer. */
+  accessLevel: number
+  /** With `personal`: the day `cli`'s token expires (`YYYY-MM-DD`), when GitLab reported it. */
+  expiresAt?: string
+  /** With `personal`: the day `workerCli`'s token expires (`YYYY-MM-DD`), when GitLab reported it. */
+  workerExpiresAt?: string
+  /** With `personal`: true when GitLab could not report the tokens (before GitLab 15.5), so their scopes went unchecked. */
+  tokenUnchecked?: boolean
 }
 export interface FeishuBot { cli: string; appId: string; brand: 'feishu' | 'lark'; botId: string; name: string }
 
@@ -176,7 +198,8 @@ const GitlabProject = z.object({
 })
 /**
  * Verify the agent's glab account on the configured GitLab server and its Developer (push) access to the configured project.
- * Every probe is `<cli> api --hostname <host> …`, so glab never falls back to another signed-in host.
+ * Every probe is `<cli> api --hostname <host> …`, so glab never falls back to another signed-in host. In personal mode it also
+ * checks the worker's glab and both tokens (`resolveWorker`).
  */
 export async function resolveGitlab(machine: Machine, gitlab: unknown, probe: Probe, path = process.env.PATH ?? ''): Promise<Deployment> {
   const accounts = GitlabAccountsSchema.parse(gitlab ?? {})
@@ -187,7 +210,8 @@ export async function resolveGitlab(machine: Machine, gitlab: unknown, probe: Pr
   let cli: string
   try { cli = executable(accounts.cli, path, workerBin(machine.stateDir)) } catch (error) { throw new SetupError('gitlabCliMissing', { output: reason(error) }) }
   const { host, hostname } = new URL(url)
-  const api = (endpoint: string): Promise<string> => probe([cli, 'api', '--hostname', host, endpoint])
+  const call: Call = (program, endpoint) => probe([program, 'api', '--hostname', host, endpoint])
+  const api = (endpoint: string): Promise<string> => call(cli, endpoint)
   const text = await api('user').catch((error: unknown) => { throw new SetupError('gitlabCliSignedOut', { host, output: reason(error) }) })
   const agent = parsed(GitlabUser, text)
   if (!agent) throw new SetupError('gitlabNoAccount', { host })
@@ -201,8 +225,52 @@ export async function resolveGitlab(machine: Machine, gitlab: unknown, probe: Pr
   const level = Math.max(access.permissions?.project_access?.access_level ?? 0, access.permissions?.group_access?.access_level ?? 0)
   if (level < DEVELOPER) throw new SetupError('gitlabProjectReadOnly', { account: login, project: repository })
   const email = agent.commit_email || agent.email || `${agent.id}-${login}@users.noreply.${hostname}`
-  return { ...machine, repository, gitlab: { cli, url, host, login, id: agent.id, email, projectId: access.id },
-    account: { kind: 'gitlab', login, email, repository, web: url } }
+  const common = { cli, url, host, login, id: agent.id, email, projectId: access.id, trigger: accounts.trigger, accessLevel: level }
+  const resolved: GitlabAccount = accounts.identity === 'personal'
+    ? { ...common, identity: 'personal', ...await resolveWorker(machine, accounts.workerCli, call, cli, { id: agent.id, login }, host, path) }
+    : { ...common, identity: 'dedicated' }
+  return { ...machine, repository, gitlab: resolved, account: { kind: 'gitlab', login, email, repository, web: url } }
+}
+/** The scopes a personal mode worker token may hold; it must hold `read_api` and `write_repository`, and never `api`. */
+const WORKER_SCOPES: readonly string[] = ['read_api', 'read_repository', 'write_repository', 'read_user']
+const WORKER_REQUIRED: readonly string[] = ['read_api', 'write_repository']
+const TokenSelf = z.object({ scopes: z.array(z.string()), expires_at: z.string().nullish() })
+/** True when a probe failed with HTTP 404, which a GitLab before 15.5 answers for `personal_access_tokens/self`. */
+const notFound = (error: unknown): boolean =>
+  (!!error && typeof error === 'object' && 'code' in error && error.code === 404) || /\bHTTP 404\b|\b404 Not Found\b/.test(reason(error))
+const listed = (scopes: readonly string[]): string => scopes.length ? scopes.join(', ') : 'none'
+type Call = (program: string, endpoint: string) => Promise<string>
+type Tokens = Pick<GitlabAccount, 'workerCli' | 'expiresAt' | 'workerExpiresAt' | 'tokenUnchecked'>
+/**
+ * Personal mode: the worker's glab must be signed in to the same account as `cli`, with a token that reads the API and
+ * pushes but cannot write through the API, and `cli`'s token must hold `api`. A GitLab that cannot report a token (404, as
+ * before 15.5, or an answer that does not parse) leaves the scopes unchecked rather than failing.
+ */
+async function resolveWorker(machine: Machine, name: string, call: Call, cli: string, agent: { id: number; login: string }, host: string,
+  path: string): Promise<Tokens> {
+  if (!name) throw new SetupError('gitlabWorkerCliUnset')
+  let workerCli: string
+  try { workerCli = executable(name, path, workerBin(machine.stateDir)) } catch (error) { throw new SetupError('gitlabWorkerCliMissing', { output: reason(error) }) }
+  const text = await call(workerCli, 'user').catch((error: unknown) => { throw new SetupError('gitlabWorkerCliSignedOut', { host, output: reason(error) }) })
+  const worker = parsed(GitlabUser, text)
+  if (!worker) throw new SetupError('gitlabWorkerCliSignedOut', { host })
+  if (worker.id !== agent.id) throw new SetupError('gitlabWorkerOtherAccount', { account: agent.login, worker: worker.username })
+  /** The token `program` holds, or undefined when GitLab cannot report it. */
+  const token = async (program: string) => {
+    const answer = await call(program, 'personal_access_tokens/self').catch((error: unknown) => {
+      if (notFound(error)) return undefined
+      throw new SetupError('gitlabTokenUnreadable', { host, output: reason(error) })
+    })
+    return answer === undefined ? undefined : parsed(TokenSelf, answer)
+  }
+  const [main, own] = [await token(cli), await token(workerCli)]
+  if (main && !main.scopes.includes('api')) throw new SetupError('gitlabHostScopes', { scopes: listed(main.scopes) })
+  if (own) {
+    const extra = own.scopes.filter(scope => !WORKER_SCOPES.includes(scope)), missing = WORKER_REQUIRED.filter(scope => !own.scopes.includes(scope))
+    if (extra.length || missing.length) throw new SetupError('gitlabWorkerScopes', { extra: listed(extra), missing: listed(missing) })
+  }
+  return { workerCli, ...main?.expires_at ? { expiresAt: main.expires_at } : {}, ...own?.expires_at ? { workerExpiresAt: own.expires_at } : {},
+    ...main && own ? {} : { tokenUnchecked: true } }
 }
 
 const AuthStatus = z.object({ appId: z.string().regex(/^cli_[A-Za-z0-9]+$/), brand: z.enum(['feishu', 'lark']).default('feishu'), identities: z.object({ bot: z.object({ status: z.string() }) }) })

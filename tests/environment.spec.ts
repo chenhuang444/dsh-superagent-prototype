@@ -5,7 +5,8 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SENSITIVE_ENV_PATTERN, type SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
-import { GIT_LOCATION, PROTECTED_COMMANDS, agentVariables, credentialHelper, runAsWorker, verifyDirectory, withoutDirectory, workerBin, workerGitConfig, writeEnvironment }
+import { GIT_LOCATION, PROTECTED_COMMANDS, agentVariables, credentialHelper, runAsWorker, verifyDirectory, withoutDirectory, workerBin, workerGitConfig, workerHooks,
+  writeEnvironment }
   from '../src/infra/environment.ts'
 import { CliError } from '../src/infra/commands.ts'
 import { testDeployment, testGitlab, testGitlabDeployment } from './fixtures/deployment.ts'
@@ -143,6 +144,74 @@ describe('GitLab worker environment', () => {
     writeFileSync(join(dir, 'empty'), '')
     await expect(gitlabEnvironment.verify(gitlab('/opt/agent tools/glab'), subprocess(join(dir, 'empty')), signal))
       .rejects.toMatchObject({ code: 'gitlabGitTooOld', place: 'deployment', values: { url: 'https://gitlab.example.com:8443' } })
+  })
+})
+
+describe('GitLab personal mode worker environment', () => {
+  const personal = (cli: string, workerCli: string) => testGitlabDeployment({ stateDir: dir, feishu: undefined,
+    gitlab: testGitlab({ cli, workerCli, identity: 'personal', url: 'https://gitlab.example.com:8443', host: 'gitlab.example.com:8443' }) })
+  it('gives workers the worker\'s glab, for commands and for git\'s credentials, and says writes go through the tools', async () => {
+    program(join(dir, 'real', 'glab'), 'echo "$GLAB_CONFIG_DIR"')
+    const host = program(join(dir, 'glab-agent'), `GLAB_CONFIG_DIR=${dir}/agent-config exec glab "$@"`)
+    const worker = program(join(dir, 'glab-worker'), `GLAB_CONFIG_DIR=${dir}/worker-config exec glab "$@"`)
+    await writeEnvironment(personal(host, worker), ['personal-glab'], gitlabEnvironment)
+    const path = [workerBin(dir), join(dir, 'real'), '/usr/bin', '/bin'].join(':')
+    expect((await exec('glab', ['api', 'user'], { env: { PATH: path } })).stdout).toBe(`${dir}/worker-config\n`)
+    const hint = 'use glab, which acts as agent-bot with read-only API access; post notes, open and update merge requests and resolve discussions through the gitlab_* tools'
+    await expect(exec(join(workerBin(dir), 'personal-glab'), [])).rejects.toMatchObject({ stderr: `personal-glab is blocked in this installation; ${hint}.\n` })
+    await expect(exec(join(workerBin(dir), 'gh'), [])).rejects.toMatchObject({ stderr: `gh is unavailable: this installation's code host is GitLab; ${hint}.\n` })
+    const config = readFileSync(workerGitConfig(dir), 'utf8')
+    expect(config).toContain(`helper = ${JSON.stringify(credentialHelper(worker))}`)
+    expect(config).not.toContain(host)
+    expect(config).toContain(`[core]\n\thooksPath = "${workerHooks(dir)}"`)
+    const signal = new AbortController().signal
+    await expect(gitlabEnvironment.verify(personal(host, worker), subprocess(workerGitConfig(dir)), signal)).resolves.toBeUndefined()
+    await expect(gitlabEnvironment.verify(testGitlabDeployment({ stateDir: dir, gitlab: testGitlab({ cli: host, url: 'https://gitlab.example.com:8443' }) }),
+      subprocess(workerGitConfig(dir)), signal)).rejects.toMatchObject({ code: 'gitlabGitTooOld' })
+    // Back to a dedicated account: no hooks, and the directory holds none of them.
+    await writeEnvironment(testGitlabDeployment({ stateDir: dir, feishu: undefined, gitlab: testGitlab({ cli: host }) }), [], gitlabEnvironment)
+    expect(readFileSync(workerGitConfig(dir), 'utf8')).not.toContain('hooksPath')
+    expect(readdirSync(workerHooks(dir))).toEqual([])
+  })
+  describe('pre-push guard', () => {
+    let env: Record<string, string>
+    const git = async (cwd: string, ...args: string[]) => (await exec('git', args, { cwd: join(dir, cwd), env })).stdout.trim()
+    const push = (...args: string[]) => git('work', 'push', 'origin', ...args)
+    beforeEach(async () => {
+      await writeEnvironment(personal('/bin/false', '/bin/false'), [], gitlabEnvironment)
+      env = workerEnv({ PATH: process.env.PATH, HOME: dir, ...agentVariables(dir), GIT_AUTHOR_NAME: 'A', GIT_AUTHOR_EMAIL: 'a@example.com',
+        GIT_COMMITTER_NAME: 'A', GIT_COMMITTER_EMAIL: 'a@example.com' })
+      await exec('git', ['init', '-q', '--bare', '-b', 'main', 'remote.git'], { cwd: dir, env })
+      await exec('git', ['init', '-q', '-b', 'main', 'work'], { cwd: dir, env })
+      await git('work', 'remote', 'add', 'origin', join(dir, 'remote.git'))
+      await git('work', 'commit', '-q', '--allow-empty', '-m', 'first')
+      // The remote's default branch as a person pushed it, past the guard.
+      await exec('git', ['-C', join(dir, 'work'), '-c', 'core.hooksPath=/dev/null', 'push', '-q', 'origin', 'main'], { env })
+      await git('work', 'remote', 'set-head', 'origin', 'main')
+    })
+    it('lets the ticket\'s branch through and runs the repository\'s own pre-push hook with the same input', async () => {
+      const log = join(dir, 'hook.log')
+      program(join(dir, 'work', '.git', 'hooks', 'pre-push'), `echo "$1" >> ${log}; cat >> ${log}`)
+      await git('work', 'switch', '-q', '-c', 'agent/fix-button')
+      await git('work', 'commit', '-q', '--allow-empty', '-m', 'fix')
+      await push('agent/fix-button')
+      expect(await git('remote.git', 'branch', '--list', 'agent/fix-button')).toContain('agent/fix-button')
+      expect(readFileSync(log, 'utf8')).toMatch(/^origin\nrefs\/heads\/agent\/fix-button [0-9a-f]{40} refs\/heads\/agent\/fix-button 0{40}\n$/)
+    })
+    it('refuses tags, deletions and the default branch, naming why', async () => {
+      const refused = (args: string[], why: string) => expect(push(...args)).rejects.toMatchObject({ stderr: expect.stringContaining(`dsh-superagent: push refused: ${why}`) })
+      await git('work', 'tag', 'v1')
+      await refused(['v1'], 'refs/tags/v1 is a tag')
+      // git runs no pre-push hook when nothing would change, so the branch has something new.
+      await git('work', 'commit', '-q', '--allow-empty', '-m', 'second')
+      await refused(['HEAD:refs/heads/main'], 'main is the default branch of origin')
+      await exec('git', ['-C', join(dir, 'work'), '-c', 'core.hooksPath=/dev/null', 'push', '-q', 'origin', 'HEAD:refs/heads/old'], { env })
+      await refused([':old'], 'it deletes refs/heads/old')
+      // Without the remote's HEAD, main and master are refused.
+      await git('work', 'remote', 'set-head', 'origin', '-d')
+      await refused(['HEAD:master'], 'master is a default branch')
+      expect(await git('remote.git', 'tag', '--list')).toBe('')
+    })
   })
 })
 

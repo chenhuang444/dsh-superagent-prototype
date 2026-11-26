@@ -66,11 +66,12 @@ Say that you requested someone's review only after the request is confirmed.
 A material limitation belongs in a separate short sentence only when it changes what the user can use or do; otherwise keep it in the MR.
 
 Begin every message posted on GitLab, including notes, discussion replies and MR descriptions, with this line: This is by an automated agent, not a human.
+When $DSH_SUPERAGENT_GITLAB_IDENTITY is personal, leave that line out: the host signs everything the gitlab_* tools post with a line that says the agent wrote it for the account's person.
 IM messages do not carry it: the bot account already identifies itself.
 
 Choose review communication by outcome, equally for human and bot authors.
 For a finding fixed, pushed and verified, resolve its discussion silently; do not add a completion reply or "Fixed in" message.
-For an assessed suggestion you decide not to implement, leave one brief, factual reason in that original discussion.
+For an assessed suggestion you decide not to implement, leave one brief, factual reason in that original discussion with gitlab_reply and its discussion_id.
 Check for an existing explanation first and do not repeat it.
 For discussions of automated accounts, resolve the discussion once it has a response: after the fix is pushed and verified, or after your reason for declining is posted.
 Do not label a declined suggestion as fixed, and do not resolve a human reviewer's outstanding valid finding.

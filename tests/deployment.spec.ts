@@ -74,7 +74,7 @@ describe('setup fields', () => {
     const feishu = settings({ github: { repository: 'acme/widgets', cli: 'gh' }, gitlab: { url: 'https://gitlab.example.com', project: 'acme/widgets' }, feishu: { cli: 'lark2' } })
     expect([setupChanged(before, github, 'github'), setupChanged(before, gitlab, 'github'), setupChanged(before, feishu, 'github')]).toEqual([true, false, true])
     expect([setupChanged(before, github, 'gitlab'), setupChanged(before, gitlab, 'gitlab'), setupChanged(before, feishu, 'gitlab')]).toEqual([false, true, true])
-    expect(setupFields('gitlab')).toEqual({ gitlab: ['url', 'project', 'cli'], feishu: ['cli'] })
+    expect(setupFields('gitlab')).toEqual({ gitlab: ['url', 'project', 'cli', 'identity', 'workerCli', 'trigger'], feishu: ['cli'] })
     expect(SETUP_FIELDS).toEqual({ github: ['repository', 'cli'], feishu: ['cli'] })
   })
 })

@@ -366,6 +366,7 @@ Some generic modules still refer to a Source by name:
 | `src/app/tools/tool.ts` | The `Tool` type, `readTool`, the `orchestrator_read` of both roles, and `AcknowledgementSchema` |
 | `src/app/tools/main.ts` | The main Session's tools |
 | `src/app/tools/executor.ts` | An Executor Session's tools |
+| `src/app/tools/gitlab.ts` | A GitLab deployment's Executor write tools, run with the host's glab on the ticket's own GitLab threads and signed with the host's marker |
 | `src/app/http.ts` | The `/orchestrator/api` routes: the same-origin check, request limits and one status per kind of failure |
 | `src/app/api.ts` | `Api`, every route with its parameters, query, body and response, and the filters of the lists; it imports only types, so the panel bundles it |
 | `src/app/views/text.ts` | The two forms of a view's text: `preview`, plain text on one line, and `markdown` without HTML; `plain` and `readable` |
@@ -392,6 +393,7 @@ Some generic modules still refer to a Source by name:
 | `src/sources/github-channel.ts` | The GitHub Channel: comments and review thread replies, `sent` or `gone` |
 | `src/sources/github-read.ts` | CI snapshots, repository reads, the `github/` resources, and `githubThreadContext`: an Issue's or pull request's conversation by page |
 | `src/sources/gitlab.ts` | The GitLab kind and plugin entry, exported as `./gitlab-watch`: its fields, scope, Policy rows, execution variables, facts and search, and a poll round of the project's updated Issues and merge requests with their discussions, subscribed Threads, and the pipelines of merge requests and the default branch |
+| `src/sources/gitlab-identity.ts` | Under the GitLab identity (`dedicated` or `personal`), who wrote a note or item, whom it addresses (`@login` or the trigger word), and the marker and signature of what the host writes |
 | `src/sources/gitlab-trigger.ts` | GitLab Issues, merge requests, notes, review decisions and pipeline changes as Triggers; mentions and GitLab addresses |
 | `src/sources/gitlab-mr.ts` | The merge request rules: which merge requests a Ticket follows (`claimMr`, `observeMr`), the closes it reports to the Engine, and `mrEndNotices`, the chat notice of a Ticket that ended merged or closed |
 | `src/sources/gitlab-channel.ts` | The GitLab Channel: notes on Issues and merge requests and replies in their discussions, kept once by a hidden marker, `sent` or `gone` |
@@ -456,6 +458,7 @@ Some generic modules still refer to a Source by name:
 | `tests/delivery.spec.ts` | `AgentDelivery` |
 | `tests/retry-health.spec.ts`, `tests/role-models.spec.ts`, `tests/model-tiers.spec.ts` | Model budget retries, the models of the two roles, and the Executor's model tiers |
 | `tests/runtime.spec.ts` | The whole application on a simulated DeepSeek Harness host, through tools and HTTP |
+| `tests/gitlab-tools.spec.ts` | The GitLab write tools: the ticket's threads they may act on, the marker and signature, retries that find an earlier post, and the ticket branch of a new MR |
 | `tests/tools.spec.ts` | The Sessions' tools: what `orchestrator_read` reads for each role, and the shapes and checks of the other main Session tools |
 | `tests/runtime-concurrency.spec.ts` | Work that overlaps: Triggers during a pass, Tickets that change during deliveries and launches |
 | `tests/http.spec.ts` | The same-origin and loopback checks, the status of each kind of failure, the body limit, path parameters and queries |
@@ -469,6 +472,7 @@ Some generic modules still refer to a Source by name:
 | `tests/model-surface.spec.ts` | Everything models read: tools, prompts, skills and inputs, checked against the tool schemas, the execution environment and the glossary, within a size budget per role |
 | `tests/gitlab-prompts.spec.ts` | A GitLab deployment's built-in texts: each GitLab file replaces a shared one, and nothing GitLab Sessions read names the GitHub workflow |
 | `tests/gitlab-setup.spec.ts` | `resolveGitlab`: the agent's glab account, project access and every GitLab setup problem |
+| `tests/gitlab-identity.spec.ts` | The trigger word and what does not count as one, the agent's and the person's notes under `personal`, and the signature |
 | `tests/gitlab-trigger.spec.ts` | GitLab notes, Issues, merge requests, review decisions and pipelines as Triggers; mentions, bots, search, scope, the Policy part and the execution variables |
 | `tests/gitlab-source.spec.ts` | The GitLab Source's poll rounds: observe switches, review notes, cursors on abort and failure, subscribed Threads, merge request and default-branch pipelines, and its health, among it `notForge` for both forge Sources |
 | `tests/gitlab-mr.spec.ts`, `tests/gitlab-channel.spec.ts`, `tests/gitlab-read.spec.ts` | The merge request rules and end notices; the GitLab Channel's marker, discussion replies and `gone`; the `gitlab/` reads, pipelines as CI, repository paths, Thread context and the forge's registration |
@@ -563,6 +567,7 @@ Each Executor has six application tools:
 | `orchestrator_report` | Report progress or an outcome, binding a pull request under the pull-request rules |
 | `orchestrator_thread_unrelated` | Drop an unrelated attached Thread, hand back its owned follow-ups and tell the main Session why |
 | `orchestrator_thread_follow` | Subscribe to a related Thread for context and tell the main Session |
+| `gitlab_reply`, `gitlab_resolve`, `gitlab_mr_create`, `gitlab_mr_update`, `gitlab_mr_close`, `gitlab_upload`, `gitlab_job_retry` | GitLab deployments only: write to the ticket's own Issues and MRs with the host's glab, each body signed with the host's marker; under `personal` the workers' glab only reads |
 | `orchestrator_trigger_handback` | Hand back a message once, with a reason carried by its candidate |
 
 A hand-back returns `queued: false` if another Ticket still owns the message, or this Ticket never owned it. For example, a bot message went to Eval independently.

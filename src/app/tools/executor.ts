@@ -8,6 +8,7 @@ import { readResource, type ResourceHost } from '../resources.ts'
 import type { Store } from '../store.ts'
 import { reportRelay, threadFollowedNotice } from '../notices.ts'
 import type { Sessions } from '../sessions.ts'
+import { gitlabTools } from './gitlab.ts'
 import { AcknowledgementSchema, readTool, tool, type Tool } from './tool.ts'
 
 export interface ExecutorToolsHost {
@@ -112,5 +113,7 @@ export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
         })
       },
     }),
+    // A GitLab worker writes to GitLab only through the host, which marks and signs what it posts.
+    ...host.forge.kind === 'gitlab' ? gitlabTools(host.forgeContext, ticketId) : [],
   ]
 }

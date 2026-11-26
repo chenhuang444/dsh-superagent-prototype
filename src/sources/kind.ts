@@ -59,6 +59,10 @@ export interface SourceChannel<C> {
 export interface ContextMessage {
   id: string; from: string; at: string; text: string
   bot?: true; deleted?: true; reply_to?: string; url?: string; path?: string; line?: number
+  /** The agent wrote it, with an account it shares with a person (a GitLab deployment under `personal`). */
+  agent?: true
+  /** The person whose account the agent shares wrote it themselves. */
+  owner?: true
 }
 export type ContextPartName = 'thread' | 'root' | 'parent'
 export interface ContextPart { messages: ContextMessage[]; next?: string | undefined; body: Record<string, unknown>; status?: string }
