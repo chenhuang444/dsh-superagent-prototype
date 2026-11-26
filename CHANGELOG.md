@@ -2,6 +2,21 @@
 
 All notable changes to dsh-superagent are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## 0.2.2-rc.3 - 2026-11-26
+
+This release still targets the DSH 0.2.2-rc.x interfaces and requires DSH 0.2.2-rc.2 or later.
+
+### Added
+
+- Personal access token mode for GitLab. Set **Identity** to `personal` on the GitLab Source when the project cannot have an account of the agent's own. The agent then works under the operator's account with two tokens: `api` for dsh-superagent, and `read_api` with `write_repository` for the **Worker glab**. Setup checks that both belong to one user and have those scopes. The default, `dedicated`, keeps the existing behaviour. See [006 Deployment](docs/006-deployment.md).
+- Under `personal`, everything dsh-superagent writes on GitLab carries a signature line above its hidden marker. A note of the account without the marker counts as the person's own words. People address the agent with the **Trigger** word and a colon at the start of a line, `agent:` by default, optionally after mentions. Quotes and code do not count. A note that only mentions the person is not for the agent, unless it answers in a discussion the agent took part in.
+- Under `personal`, the worker's git refuses to push tags, delete remote branches or push the default branch. dsh-superagent withdraws auto-merge on a ticket's MR and signs again an MR description that lost its marker. The GitLab Source warns when the account is a Maintainer, when GitLab did not report the tokens' scopes, and when a token expires within 14 days.
+- GitLab write tools for workers: `gitlab_reply`, `gitlab_resolve`, `gitlab_mr_create`, `gitlab_mr_update`, `gitlab_mr_close`, `gitlab_upload` and `gitlab_job_retry`. They run with dsh-superagent's glab, act only on the ticket's own Issues and MRs, and find what an earlier attempt of the same call posted.
+
+### Changed
+
+- GitLab workers write to GitLab only through the `gitlab_*` tools, in both identities. The GitLab prompts and the `dsh-superagent-gitlab` skill no longer show `glab api -X POST` or `PUT`; glab stays for reads.
+
 ## 0.2.2-rc.2 - 2026-11-25
 
 This release still targets the DSH 0.2.2-rc.x interfaces and requires DSH 0.2.2-rc.2 or later.
