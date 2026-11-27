@@ -82,9 +82,15 @@ export const mentionTokens = (text: string): string =>
   text.replace(new RegExp(`${MENTION.source}(?:[ \\t]*[:：])?`, 'g'), '@m ')
 /** True when a line of `text` addresses the agent by `trigger`, after any mentions; quotes and code do not count. */
 export const addressesAgent = (text: string, trigger: string): boolean => summons(text, trigger, mentionTokens)
-/** The text as a person reads it: mentions as `@名字`, without invisible markers. */
+/** A colour per character of the prefix, in Feishu Project's `rgb()` form, dark enough to read on white. */
+const PALETTE = ['245, 74, 69', '255, 125, 0', '222, 160, 0', '120, 180, 0', '53, 189, 75', '0, 180, 150', '20, 160, 220', '51, 112, 255',
+  '100, 80, 230', '150, 70, 220', '215, 60, 180', '240, 70, 120']
+/** `[superagent]` in bold, each character in its own colour, which starts every comment the host writes. */
+export const MEEGO_PREFIX = [...'[superagent]'].map((char, index) => `<span style="color: rgb(${PALETTE[index % PALETTE.length]})">**${char}**</span>`).join('')
+/** The text as a person reads it: mentions as `@名字`, the prefix as `[superagent]`, without colours or invisible markers. */
 export const readable = (text: string): string =>
-  withoutMarkers(text.replace(MENTION, (_match, reply: string | undefined, name: string) => `${reply ? '回复' : ''}@${name.trim()}`))
+  withoutMarkers(text.replaceAll(MEEGO_PREFIX, '[superagent]').replace(/<span\s[^>]*>|<\/span>/g, '')
+    .replace(MENTION, (_match, reply: string | undefined, name: string) => `${reply ? '回复' : ''}@${name.trim()}`))
 
 /**
  * Reads a comment's `created_at` (`2026-11-26 16:35:13`, no zone) as an ISO time: the server renders it in its own zone, whose

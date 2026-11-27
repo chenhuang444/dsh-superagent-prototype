@@ -4,7 +4,7 @@ import { KV } from '../src/kv.ts'
 import { meegoLink, meegoMention, meegoSignature, sendMeego } from '../src/sources/meego-channel.ts'
 import { meegoThreadContext } from '../src/sources/meego-read.ts'
 import { meegoKind } from '../src/sources/meego.ts'
-import { commentTrigger, itemTrigger, meegoChannel } from '../src/sources/meego-trigger.ts'
+import { commentTrigger, itemTrigger, MEEGO_PREFIX, meegoChannel, readable } from '../src/sources/meego-trigger.ts'
 import { invisibleMarker, markerBits } from '../src/sources/personal-identity.ts'
 import { COLLEAGUE, comment, comments, flag, meegle, meegoHost, mention, notFound, OWNER, page, workItem } from './fixtures/meego.ts'
 
@@ -12,6 +12,7 @@ afterEach(() => { vi.restoreAllMocks() })
 const address = { projectKey: 'p1', workItemId: '123', url: page('123') }
 const message = (id: string, text = '已看过，是缓存问题。', kind: OutboundMessage['kind'] = 'reply'): OutboundMessage =>
   ({ id, channel: meegoChannel(address), text, kind })
+const HIGHLIGHT = (text: string) => `<span style="background-color: rgb(255, 236, 179)"><span style="color: rgb(245, 74, 69)">**${text}**</span></span>`
 const ADA = '@Ada<!-- mention:{"id":"lark_user_id_lark_ada","cn_name":"Ada","blockType":"AT_USER_BLOCK"} -->'
 
 it('posts a signed comment with its marker once, and finds it again on a retry', async () => {
@@ -23,7 +24,7 @@ it('posts a signed comment with its marker once, and finds it again on a retry',
   })
   expect(await sendMeego(h, message('m1'))).toBe('sent')
   const bits = markerBits(key('meego-send', 'm1'))
-  expect(posted).toEqual([`${ADA} 已看过，是缓存问题。\n\n—— 由 DSH superagent 代 Ada 发出。找 agent 请在评论开头写 bot:${invisibleMarker(bits)}`])
+  expect(posted).toEqual([`${MEEGO_PREFIX} ${ADA} 已看过，是缓存问题。\n\n—— 由 DSH superagent 代 Ada 发出。👉 找 agent 请在评论开头写 ${HIGHLIGHT('bot:')}${invisibleMarker(bits)}`])
   expect(h.store.get(KV.meego.marker(bits))).toEqual({ message: 'm1', comment: '800' })
   expect(h.store.get(KV.meego.written('800'))).toBe('m1')
   // A retry after the comment went out writes nothing.
@@ -46,7 +47,7 @@ it('mentions the operator, who is not notified of their own account\'s comments,
     meegle(h.commands, { 'comment list': comments([]), 'comment add': (args: string[]) => { content = flag(args, '--content')!; return { success: true } } })
     await sendMeego(h, message(id, '收到', kind))
     h.close()
-    return content.startsWith(`${ADA} 收到`)
+    return content.startsWith(`${MEEGO_PREFIX} ${ADA} 收到`)
   }
   expect(await posted(undefined, 'reply', 'n1')).toBe(true)
   expect(await posted(undefined, 'notice', 'n2')).toBe(true)
@@ -55,9 +56,33 @@ it('mentions the operator, who is not notified of their own account\'s comments,
   expect(await posted('none', 'reply', 'n5')).toBe(false)
 })
 
+it('adds the operator to the watchers after a comment, keeping the others, unless they watch or the switch is off', async () => {
+  const watched = async (watchers: string[], config: Record<string, unknown> = {}, get: unknown = undefined) => {
+    const h = meegoHost(config)
+    const api = meegle(h.commands, { 'comment list': comments([]), 'comment add': { success: true },
+      'workitem get': get ?? { ...workItem('123'), work_item_fields: [{ key: 'watchers', value: watchers.map(key => ({ key, name: key })) }] },
+      'workitem update': { mcp_result: '' } })
+    expect(await sendMeego(h, message('w1'))).toBe('sent')
+    h.close()
+    return api.named('workitem update').map(args => JSON.parse(flag(args, '--fields')!))
+  }
+  expect(await watched([COLLEAGUE])).toEqual([[{ field_key: 'watchers', field_value: JSON.stringify([COLLEAGUE, OWNER]) }]])
+  expect(await watched([])).toEqual([[{ field_key: 'watchers', field_value: JSON.stringify([OWNER]) }]])
+  expect(await watched([COLLEAGUE, OWNER])).toEqual([])
+  expect(await watched([], { watch: false })).toEqual([])
+  // A failure to read the work item leaves the comment sent.
+  expect(await watched([], {}, new Error('busy'))).toEqual([])
+})
+
+it('starts with [superagent] in bold, a colour per character, which reads back as plain text', () => {
+  expect(MEEGO_PREFIX.startsWith('<span style="color: rgb(245, 74, 69)">**[**</span><span style="color: rgb(255, 125, 0)">**s**</span>')).toBe(true)
+  expect(MEEGO_PREFIX.match(/<span /g)).toHaveLength(12)
+  expect(readable(`${MEEGO_PREFIX} ${ADA} 修好了\n\n写 ${HIGHLIGHT('agent:')}`)).toBe('[superagent] @Ada 修好了\n\n写 **agent:**')
+})
+
 it('signs in the language of the text, without mentioning the person', () => {
   expect(meegoSignature('Ada', 'agent', 'Fixed in the latest build.'))
-    .toBe('— Posted by DSH superagent on behalf of Ada. To address the agent, start a comment with agent:')
+    .toBe(`— Posted by DSH superagent on behalf of Ada. 👉 To address the agent, start a comment with ${HIGHLIGHT('agent:')}`)
   expect(meegoSignature('Ada', 'agent', '修好了')).not.toContain('@')
 })
 
