@@ -108,7 +108,7 @@ describe('the kind', () => {
     expect(meegoKind.find!('#12')).toEqual({ threads: [], terms: [] })
   })
   it('validates its configuration: unique spaces and views, bounded tunables', () => {
-    expect(config()).toMatchObject({ cli: '', profile: 'superagent', trigger: 'agent', views: [], todo: false, pollSeconds: 60, maxItems: 40, failuresBeforeError: 3 })
+    expect(config()).toMatchObject({ cli: '', profile: 'superagent', trigger: 'agent', views: [], todo: false, notify: 'replies', pollSeconds: 60, maxItems: 40, failuresBeforeError: 3 })
     expect(() => config({ spaces: [{ projectKey: 'p1' }, { projectKey: 'p1' }] })).toThrow()
     expect(() => config({ views: [{ url: 'not a link' }] })).toThrow()
     expect(() => config({ maxItems: 0 })).toThrow()

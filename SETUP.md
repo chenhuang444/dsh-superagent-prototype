@@ -62,7 +62,7 @@ Ask in this order, one per message, following the flow of work in [docs/001-doma
 
 **Feishu Project: work items and their comments.** Feishu Project has no bot account, so the agent works there under the operator's own account and signs what it writes; ask these only when question 12 says yes.
 
-12. **Feishu Project.** Should the agent also read work items and comments from Feishu Project? [No, unless the team tracks its work there.] Everything it posts there appears under the operator's name, with a signature line, as in the Feishu Project section of `docs/006-deployment.md`.
+12. **Feishu Project.** Should the agent also read work items and comments from Feishu Project? [No, unless the team tracks its work there.] Everything it posts there appears under the operator's name, with a signature line, as in the Feishu Project section of `docs/006-deployment.md`. Replies and results start with a mention of the operator so that Feishu notifies them; keep `notify` at `replies` unless they ask otherwise.
 13. **Site.** Which Feishu Project site does the operator sign in to, as a host name such as `project.example.com`? Take it from the probe's `host` when the profile is signed in; otherwise ask, and never assume one.
 14. **Spaces.** Which spaces should the agent watch, by name or by a link into each? [One space to start; more can be added on the card later.] Look up their project keys with `meegle --profile superagent project search --project-key <name>` once the profile is signed in.
 15. **Views.** Which views should it watch? Ask for their links. [A view of the operator's own stories in progress, and a view of bugs: only work items in these views reach the agent unasked.]

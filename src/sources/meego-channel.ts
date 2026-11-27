@@ -39,9 +39,21 @@ export async function allComments(commands: Commands, projectKey: string, workIt
 export const meegoSignature = (name: string, trigger: string, text: string): string => chinese(text)
   ? `—— 由 DSH superagent 代 ${name} 发出。找 agent 请在评论开头写 ${trigger}:`
   : `— Posted by DSH superagent on behalf of ${name}. To address the agent, start a comment with ${trigger}:`
-/** The content the host posts: the text, a blank line, the signature and the invisible marker of `bits`. */
-export const signedComment = (text: string, name: string, trigger: string, bits: string): string =>
-  `${text.trimEnd()}\n\n${meegoSignature(name, trigger, text)}${invisibleMarker(bits)}`
+/** A mention of a person as Feishu Project writes it, which notifies them; `larkUserId` is their lark_user_id. */
+export const meegoMention = (name: string, larkUserId: string): string =>
+  `@${name}<!-- mention:${JSON.stringify({ id: `lark_user_id_${larkUserId}`, cn_name: name, blockType: 'AT_USER_BLOCK' })} -->`
+/**
+ * The content the host posts: an optional leading mention, the text, a blank line, the signature and the invisible marker
+ * of `bits`.
+ */
+export const signedComment = (text: string, name: string, trigger: string, bits: string, mention = ''): string =>
+  `${mention ? `${mention} ` : ''}${text.trimEnd()}\n\n${meegoSignature(name, trigger, text)}${invisibleMarker(bits)}`
+/**
+ * Whether a comment of `kind` mentions the operator, under the Source's `notify`: the agent writes with their account, which
+ * notifies nobody, so a mention is how they learn of it. `replies` leaves out the acknowledgement of a request they just wrote.
+ */
+export const mentionsOperator = (notify: 'replies' | 'all' | 'none', kind: OutboundMessage['kind']): boolean =>
+  notify === 'all' || (notify === 'replies' && kind !== 'acknowledgement')
 
 /**
  * Posts a comment once per message id. The host stores the marker before writing, so a retry finds a comment an earlier attempt
@@ -69,9 +81,10 @@ export async function sendMeego(host: Pick<SourceContext, 'commands'>, message: 
   }
   try {
     if (await find()) return 'sent'
-    const trigger = binding.config<{ trigger: string }>('meego')?.trigger ?? 'agent'
+    const config = binding.config<{ trigger: string; notify?: 'replies' | 'all' | 'none' }>('meego')
+    const mention = meego.larkUserId && mentionsOperator(config?.notify ?? 'replies', message.kind) ? meegoMention(meego.name, meego.larkUserId) : ''
     await commands.meegle(['comment', 'add', '--project-key', projectKey, '--work-item-id', workItemId,
-      '--content', signedComment(message.text, meego.name, trigger, bits)])
+      '--content', signedComment(message.text, meego.name, config?.trigger ?? 'agent', bits, mention)])
     // A comment the list does not show yet is recorded when a poll finds its marker.
     await find().catch(() => false)
     return 'sent'

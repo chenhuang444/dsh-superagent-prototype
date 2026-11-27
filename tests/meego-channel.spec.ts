@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import { key, type OutboundMessage, type Trigger } from '../src/core/index.ts'
 import { KV } from '../src/kv.ts'
-import { meegoLink, meegoSignature, sendMeego } from '../src/sources/meego-channel.ts'
+import { meegoLink, meegoMention, meegoSignature, sendMeego } from '../src/sources/meego-channel.ts'
 import { meegoThreadContext } from '../src/sources/meego-read.ts'
 import { meegoKind } from '../src/sources/meego.ts'
 import { commentTrigger, itemTrigger, meegoChannel } from '../src/sources/meego-trigger.ts'
@@ -10,7 +10,9 @@ import { COLLEAGUE, comment, comments, flag, meegle, meegoHost, mention, notFoun
 
 afterEach(() => { vi.restoreAllMocks() })
 const address = { projectKey: 'p1', workItemId: '123', url: page('123') }
-const message = (id: string, text = '已看过，是缓存问题。'): OutboundMessage => ({ id, channel: meegoChannel(address), text, kind: 'reply' })
+const message = (id: string, text = '已看过，是缓存问题。', kind: OutboundMessage['kind'] = 'reply'): OutboundMessage =>
+  ({ id, channel: meegoChannel(address), text, kind })
+const ADA = '@Ada<!-- mention:{"id":"lark_user_id_lark_ada","cn_name":"Ada","blockType":"AT_USER_BLOCK"} -->'
 
 it('posts a signed comment with its marker once, and finds it again on a retry', async () => {
   const h = meegoHost({ trigger: 'bot' })
@@ -21,7 +23,7 @@ it('posts a signed comment with its marker once, and finds it again on a retry',
   })
   expect(await sendMeego(h, message('m1'))).toBe('sent')
   const bits = markerBits(key('meego-send', 'm1'))
-  expect(posted).toEqual([`已看过，是缓存问题。\n\n—— 由 DSH superagent 代 Ada 发出。找 agent 请在评论开头写 bot:${invisibleMarker(bits)}`])
+  expect(posted).toEqual([`${ADA} 已看过，是缓存问题。\n\n—— 由 DSH superagent 代 Ada 发出。找 agent 请在评论开头写 bot:${invisibleMarker(bits)}`])
   expect(h.store.get(KV.meego.marker(bits))).toEqual({ message: 'm1', comment: '800' })
   expect(h.store.get(KV.meego.written('800'))).toBe('m1')
   // A retry after the comment went out writes nothing.
@@ -34,6 +36,23 @@ it('posts a signed comment with its marker once, and finds it again on a retry',
   expect(api.named('comment add')).toHaveLength(1)
   expect(h.store.get(KV.meego.written('800'))).toBe('m1')
   h.close()
+})
+
+it('mentions the operator, who is not notified of their own account\'s comments, as the notify setting says', async () => {
+  expect(meegoMention('Ada', 'lark_ada')).toBe(ADA)
+  const posted = async (notify: string | undefined, kind: OutboundMessage['kind'], id: string) => {
+    const h = meegoHost(notify ? { notify } : {})
+    let content = ''
+    meegle(h.commands, { 'comment list': comments([]), 'comment add': (args: string[]) => { content = flag(args, '--content')!; return { success: true } } })
+    await sendMeego(h, message(id, '收到', kind))
+    h.close()
+    return content.startsWith(`${ADA} 收到`)
+  }
+  expect(await posted(undefined, 'reply', 'n1')).toBe(true)
+  expect(await posted(undefined, 'notice', 'n2')).toBe(true)
+  expect(await posted(undefined, 'acknowledgement', 'n3')).toBe(false)
+  expect(await posted('all', 'acknowledgement', 'n4')).toBe(true)
+  expect(await posted('none', 'reply', 'n5')).toBe(false)
 })
 
 it('signs in the language of the text, without mentioning the person', () => {

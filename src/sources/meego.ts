@@ -19,6 +19,7 @@ const MeegoConfigSchema = MeegoCliSchema.extend({
   views: z.array(z.object({ url: z.string().trim().regex(/^https:\/\/\S+$/, 'a view page link') }).strict())
     .refine(rows => unique(rows, row => row.url), 'Duplicate views').default([]),
   todo: z.boolean().default(false),
+  notify: z.enum(['replies', 'all', 'none']).default('replies'),
   pollSeconds: z.number().int().min(60).max(3600).default(60),
   maxItems: z.number().int().min(1).max(200).default(40),
   failuresBeforeError: z.number().int().min(1).max(20).default(3),
@@ -47,6 +48,10 @@ export const meegoKind: SourceKind<MeegoConfig> = {
       columns: [{ key: 'url', type: 'text', label: { zh: '视图链接', en: 'View link' }, pattern: 'https://\\S+' }] },
     { key: 'todo', type: 'switch', label: { zh: '也关注我的待办', en: 'Also watch my to-do list' },
       hint: { zh: '打开后，「我的待办」里新出现的、属于上面空间的工作项也成为触发。打开时已有的不算。', en: 'Work items new in your to-do list that belong to a space above become Triggers too. Those already there when switched on do not.' } },
+    { key: 'notify', type: 'select', label: { zh: '评论里 @ 我', en: 'Mention me in comments' },
+      options: [{ value: 'replies', label: { zh: '回复和结果', en: 'Replies and results' } }, { value: 'all', label: { zh: '所有评论，也包括“收到”', en: 'Every comment, acknowledgements too' } },
+        { value: 'none', label: { zh: '不 @', en: 'Never' } }],
+      hint: { zh: '智能体用你的账号评论，飞书不会因此提醒你；在评论开头 @ 你，飞书才会通知。“回复和结果”不 @ 刚接下请求时的“收到”。', en: 'The agent comments with your account, which Feishu does not notify you of; a mention of you at the start of the comment does. Replies and results leaves out the acknowledgement posted when a request is taken.' } },
     { key: 'pollSeconds', type: 'number', advanced: true, min: 60, max: 3600, label: { zh: '轮询间隔 / 秒', en: 'Polling interval / seconds' } },
     { key: 'maxItems', type: 'number', advanced: true, min: 1, max: 200, label: { zh: '每轮读评论的工作项数', en: 'Work items whose comments a poll reads' },
       hint: { zh: '关注范围超过这个数时，评论分几轮轮流读，延迟随之变长；有进行中工单的工作项每轮都读。', en: 'When the scope holds more work items, their comments are read by turns over several polls, which adds delay; work items with a live Ticket are read every poll.' } },
