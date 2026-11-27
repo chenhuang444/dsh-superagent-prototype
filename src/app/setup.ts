@@ -1,7 +1,7 @@
 /** Probes repository and account CLIs, configures the worker execution environment and command shims, and tracks setup readiness. */
 import type { Context } from '@deepseek-ai/cordis'
 import { UserError } from '../core/index.ts'
-import { resolveFeishuBot, setupFields, workerProbe, type Deployment, type Machine } from '../deployment.ts'
+import { resolveFeishuBot, resolveMeego, setupFields, workerProbe, type Deployment, type Machine } from '../deployment.ts'
 import type { ForgeKind } from '../forge/types.ts'
 import { forgeOf, resolveForge } from '../forge/index.ts'
 import { agentVariables, applyEnvironment, verifyEnvironment, withoutDirectory, workerBin, writeEnvironment } from '../infra/environment.ts'
@@ -29,6 +29,8 @@ export class Setup {
   private resolved?: Deployment
   problem?: SetupProblem
   feishuProblem?: SetupProblem
+  /** Why the Meego Source's meegle cannot run; it pauses only that Source. */
+  meegoProblem?: SetupProblem
   /** PATH with the worker shim directory removed so the host's own CLI calls invoke the real binaries. */
   private readonly path: string
   /** Environment variables pointing agent subprocesses at the isolated git config and command shims. */
@@ -60,7 +62,7 @@ export class Setup {
   }
   /** Trigger a restart to re-run setup, refusing if setup and Feishu are already healthy so running assignments are not interrupted. */
   check(): void {
-    if (this.configured() && !this.feishuProblem) throw new UserError('setupComplete')
+    if (this.configured() && !this.feishuProblem && !this.meegoProblem) throw new UserError('setupComplete')
     this.restart()
   }
   /** Defer the restart to the next macrotask so the current HTTP or tool caller receives its response first. */
@@ -69,6 +71,7 @@ export class Setup {
   async checkAccounts(block: SettingsBlock, settings: Settings): Promise<void> {
     const { machine } = this.host
     const check = block === 'source:feishu' ? resolveFeishuBot(machine, settings.sources.feishu?.config, this.probe())
+      : block === 'source:meego' ? resolveMeego(machine, settings.sources.meego?.config, this.probe())
       : resolveForge(machine, settings, this.probe())
     await check.catch((error: unknown) => { if (!(error instanceof SetupError) || error.place === block.slice(7)) throw error })
   }
@@ -91,7 +94,13 @@ export class Setup {
       context.logger.warn('dsh-superagent leaves Feishu out: %s', error.message)
       return undefined
     })
-    const resolved = { ...deployment, ...(feishu ? { feishu } : {}) }
+    const meego = await resolveMeego(machine, settings.sources.meego?.config, probe).catch((error: unknown) => {
+      if (!(error instanceof SetupError)) throw error
+      this.meegoProblem = error.problem
+      context.logger.warn('dsh-superagent leaves Feishu Project out: %s', error.message)
+      return undefined
+    })
+    const resolved = { ...deployment, ...(feishu ? { feishu } : {}), ...(meego ? { meego } : {}) }
     const machineProblem = (error: unknown): never => {
       if (error instanceof SetupError) throw error
       throw new SetupError('environmentFailed', { output: error instanceof Error ? error.message : String(error) })

@@ -64,6 +64,18 @@ export const KV = {
    * Feishu Source: known chats (`true` for direct messages); per-chat history cursor and active topics mapped from topic ID
    * to last-seen timestamp; and per-polled-thread seen message IDs and initialization flag.
    */
+  /**
+   * Meego Source: work items it has seen in scope; scope targets (a view's link, `todo`) whose items it took as the baseline;
+   * per-work-item comment cursor (epoch milliseconds); the spaces it resolved (simple name and name); the markers of comments
+   * the host wrote (marker bits to the outbox message and, once found, the comment id) and the comment ids it wrote; the next
+   * work item to read when a round reads only part of the scope; and the server's UTC offset in minutes.
+   */
+  meego: { seen: family<true, [workItem: string]>('meego-seen:'), baseline: family<true, [target: string]>('meego-baseline:'),
+    cursor: family<number, [workItem: string]>('meego-cursor:'),
+    space: family<{ simpleName: string; name: string }, [projectKey: string]>('meego-space:'),
+    marker: family<{ message: string; comment?: string }, [bits: string]>('meego-marker:'),
+    written: family<string, [comment: string]>('meego-written:'),
+    rotation: record<number>('meego-rotation'), offset: record<number>('meego-offset') },
   feishu: { chats: record<Record<string, boolean>>('feishu-chats'), history: family<string, [chat: string]>('feishu-history:'),
     topics: family<Record<string, string>, [chat: string]>('feishu-history-threads:'),
     seen: family<string[], [thread: string]>('thread-seen:'), initialized: family<boolean, [thread: string]>('thread-initialized:') },

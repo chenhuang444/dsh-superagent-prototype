@@ -92,8 +92,11 @@ export interface SourceKind<C extends Record<string, unknown> = Record<string, u
   kind: string
   title: Localized
   description: Localized
-  /** Read-only status facts derived from `deployment` (undefined while waiting for setup), keyed by field key. */
-  facts?(deployment: Deployment | undefined): Record<string, Localized | string>
+  /**
+   * Read-only status facts derived from `deployment` (undefined while waiting for setup) and the Source's stored Policy part,
+   * keyed by field key.
+   */
+  facts?(deployment: Deployment | undefined, policy?: Record<string, unknown>): Record<string, Localized | string>
   /** Validates stored and submitted configuration and fills defaults. */
   schema: z.ZodType<C>
   fields: FieldSpec[]

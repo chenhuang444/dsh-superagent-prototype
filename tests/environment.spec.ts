@@ -73,6 +73,55 @@ describe('worker shims', () => {
   })
 })
 
+describe('the worker\'s meegle', () => {
+  const meego = { profile: 'super agent', host: 'project.example.com', userKey: '1001', name: 'Alice', larkUserId: 'ou_alice' }
+  let bin: string
+  /** Runs the worker's meegle; the fake meegle prints the arguments it got, one per line. */
+  const meegle = async (...args: string[]): Promise<string> => (await exec(join(bin, 'meegle'), args)).stdout
+  const refused = (args: string[], message: string) => expect(meegle(...args)).rejects.toMatchObject({ code: 1, stdout: '', stderr: expect.stringContaining(message) })
+  beforeEach(async () => {
+    const cli = program(join(dir, 'real', 'meegle'), 'for arg do echo "$arg"; done')
+    await writeEnvironment(testDeployment({ stateDir: dir, feishu: undefined, meego: { ...meego, cli } }), ['meegle'])
+    bin = workerBin(dir)
+  })
+  it('runs read commands under the Source\'s profile, with global flags before, between and after the command words', async () => {
+    expect(await meegle('comment', 'list', '--project-key', 'p1', '--work-item-id', '7')).toBe('--profile\nsuper agent\ncomment\nlist\n--project-key\np1\n--work-item-id\n7\n')
+    for (const args of [['workitem', 'get', '--work-item-id', '7'], ['-o', 'table', 'view', 'get'], ['--format=json', 'workitem', '--select', 'id', '+batch-get'],
+      ['-ojson', 'attachment', '+download'], ['--set', 'a=b', '-P', '{"x":1}', 'workflow', 'get-node'], ['--params={}', '-v', 'user', 'me'],
+      ['team', 'list-members'], ['url', 'decode', '--url', 'https://project.example.com/acme/story/detail/7'], ['project', 'search'],
+      ['inspect', 'comment.add'], ['help', 'comment', 'add'], ['version'], ['--version'], [], ['comment'], ['--help']]) {
+      expect((await meegle(...args)).split('\n').slice(0, 2), args.join(' ')).toEqual(['--profile', 'super agent'])
+    }
+  })
+  it('prints only help for other commands, and not when -h is a flag\'s value', async () => {
+    expect(await meegle('comment', 'add', '--help', '--help=false', '--content', 'hi')).toBe('--profile\nsuper agent\ncomment\nadd\n--help\n')
+    expect(await meegle('-h', 'workitem', 'create')).toBe('--profile\nsuper agent\nworkitem\ncreate\n--help\n')
+    await refused(['comment', 'add', '--content', '-h'], 'comment add is refused')
+    await refused(['--select', '-h', 'workitem', 'create'], 'workitem create is refused')
+  })
+  it('refuses writes, unknown commands and flags it cannot tell apart, saying that writes go through the host', async () => {
+    const write = 'is refused: it may write to Feishu Project, which workers only read. Ask the host to do it; there is no tool for writes yet.'
+    for (const args of [['comment', 'add', '--content', 'hi'], ['workitem', 'update'], ['workflow', 'transition'], ['-o', 'json', 'view', 'create-fixed'],
+      ['attachment', '+upload'], ['subtask', 'create'], ['config', 'profile', 'use', 'default'], ['auth', 'logout'], ['telemetry']]) {
+      await refused(args, `${args.filter(arg => !arg.startsWith('-') && arg !== 'json').slice(0, 2).join(' ')} ${write}`)
+    }
+    // A command flag before the command words takes a value too, as `--content list` does here.
+    await refused(['comment', '--content', 'list', 'add'], 'only global flags (-o, --select, --set, -P) may come before the command')
+    await refused(['--dry-run=x', 'comment', 'add'], 'comment add is refused')
+  })
+  it('refuses another profile in any form', async () => {
+    for (const args of [['--profile', 'default', 'user', 'me'], ['user', 'me', '--profile=default'], ['comment', 'add', '--profile', 'x']]) {
+      await refused(args, '--profile is refused: dsh-superagent passes the profile of its own account.')
+    }
+  })
+  it('is not written without the Meego Source, where blocking meegle works again', async () => {
+    await writeEnvironment(testDeployment({ stateDir: dir, feishu: undefined }), [])
+    expect(readdirSync(bin)).not.toContain('meegle')
+    await writeEnvironment(testDeployment({ stateDir: dir, feishu: undefined }), ['meegle'])
+    await expect(exec(join(bin, 'meegle'), ['user', 'me'])).rejects.toMatchObject({ code: 1, stderr: 'meegle is blocked in this installation; use gh, which acts as agent-bot.\n' })
+  })
+})
+
 describe('agent git configuration', () => {
   it('ignores the operator\'s global and system git configuration, also after DSH drops credential-shaped variables', async () => {
     const home = join(dir, 'home'); mkdirSync(home)

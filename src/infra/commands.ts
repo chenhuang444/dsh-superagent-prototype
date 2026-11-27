@@ -40,6 +40,19 @@ function ended(error: unknown): string {
   if (typeof code === 'number') return `exited with code ${code}`
   return typeof code === 'string' ? `could not run: ${code}` : 'failed'
 }
+/**
+ * A failed `meegle` call. `reason` is the server's error name from `error=<Name>` in its message (such as `WorkItemNotFound`),
+ * `signedOut` when the profile has no login (its business commands do not exist then), or `failed`.
+ */
+export class MeegoError extends Error {
+  constructor(message: string, readonly reason: string) { super(message) }
+}
+/** Reads a `meegle` failure: its JSON error envelope, whose outer `retryable` is not reliable, or its plain diagnostics. */
+export function meegoError(error: unknown): unknown {
+  if (!(error instanceof CliError)) return error
+  if (/unknown command "/.test(error.message)) return new MeegoError(error.message, 'signedOut')
+  return new MeegoError(error.message, /\berror=(\w+)/.exec(error.message)?.[1] ?? 'failed')
+}
 export interface Tally { skipped: number }
 /** Parses array elements against a schema, skipping invalid items and incrementing `tally.skipped`. */
 export function validItems<T>(item: z.ZodType<T>, list: readonly unknown[], tally?: Tally): T[] {
@@ -136,6 +149,16 @@ export class Commands {
     const code = result.error?.code
     if (!result.ok) throw membership(new CliError(`${result.error?.message ?? 'Feishu command failed'}${code ? ` (${code})` : ''}`, code))
     return result.data
+  }
+  /**
+   * Runs the host's `meegle` under its own profile and parses its JSON output.
+   * @throws MeegoError naming the server's error (such as `WorkItemNotFound`), or `signedOut` when the profile has no login.
+   */
+  async meegle<T>(args: string[]): Promise<T> {
+    const meego = this.deployment.meego
+    if (!meego) throw new MeegoError('The Meego Source has no meegle', 'unset')
+    const output = await this.run(meego.cli, ['--profile', meego.profile, ...args]).catch((error: unknown) => { throw meegoError(error) })
+    return JSON.parse(output) as T
   }
   /** Runs `git` on PATH using the agent's isolated git environment and credential helper. */
   async git(args: string[], cwd: string): Promise<string> { return this.run('git', args, cwd) }

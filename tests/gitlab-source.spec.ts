@@ -242,3 +242,17 @@ it('warns under personal of a Maintainer role, unreported scopes and tokens abou
   expect(facts.workerCli).toMatchObject({ en: expect.stringContaining(`workerCli ${soon}`) })
   expect(gitlabKind.facts!(testGitlabDeployment({ gitlab: testGitlab({ accessLevel: 40 }) })).identity).toBeUndefined()
 })
+it('warns when a dedicated account that is no bot is on the allowed list, which drops every request it makes', () => {
+  const allowed = { allowed: [{ id: 'Agent-Bot' }] }
+  expect(gitlabKind.facts!(testGitlabDeployment(), allowed).identity).toMatchObject({ en: expect.stringContaining('set Identity to personal') })
+  // A project access token's bot user, someone else on the list, or personal identity need no warning.
+  expect(gitlabKind.facts!(testGitlabDeployment({ gitlab: testGitlab({ bot: true }) }), allowed).identity).toBeUndefined()
+  expect(gitlabKind.facts!(testGitlabDeployment(), { allowed: [{ id: 'alice' }] }).identity).toBeUndefined()
+  expect(gitlabKind.facts!(testGitlabDeployment(), undefined).identity).toBeUndefined()
+  expect(gitlabKind.facts!(testGitlabDeployment({ gitlab: testGitlab({ identity: 'personal', workerCli: '/bin/false' }) }), allowed).identity).toBeUndefined()
+})
+it('warns under dedicated of a token about to expire, on the address', () => {
+  const soon = new Date(Date.now() + 3 * 86_400_000).toISOString().slice(0, 10)
+  expect(gitlabKind.facts!(testGitlabDeployment({ gitlab: testGitlab({ expiresAt: soon }) })).url).toMatchObject({ en: expect.stringContaining(`cli ${soon}`) })
+  expect(gitlabKind.facts!(testGitlabDeployment({ gitlab: testGitlab({ expiresAt: '2099-01-01' }) }))).not.toHaveProperty('url')
+})

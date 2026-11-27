@@ -7,6 +7,7 @@
  * line that starts with the trigger word and a colon, after any mentions, addresses the agent.
  */
 import { escapeRegExp, sameName } from '../infra/text.ts'
+import { chinese, ownWords, summons } from './personal-identity.ts'
 import type { GitlabAccount } from '../deployment.ts'
 
 /** The account and identity a decision reads; tests and channels pass only these fields. */
@@ -30,41 +31,7 @@ export const byOwner = (author: string, body: string | null | undefined, identit
 export const mentions = (text: string, login: string): boolean =>
   new RegExp(`(?<![\\w@.])@${escapeRegExp(login)}(?![A-Za-z0-9_-]|\\.\\w)`, 'i').test(text)
 
-/**
- * The text of a note a person reads as their own words: without fenced code (``` and ~~~), GitLab's `>>>` quote blocks, `>`
- * quotes and the lines that continue them, HTML comments, `<details>` blocks, indented code and inline code.
- */
-export function ownWords(text: string): string {
-  const stripped = text.replace(/<!--[\s\S]*?-->/g, '').replace(/<details[\s\S]*?<\/details>/gi, '')
-  const lines: string[] = []
-  let fence: string | undefined
-  let quoteBlock = false
-  let quoted = false
-  for (const line of stripped.split(/\r?\n/)) {
-    const open = /^ {0,3}(`{3,}|~{3,})/.exec(line)
-    if (fence) { if (open && open[1]![0] === fence[0] && open[1]!.length >= fence.length && !line.trim().slice(open[1]!.length).trim()) fence = undefined; continue }
-    if (open) { fence = open[1]; continue }
-    if (/^ {0,3}>>>\s*$/.test(line)) { quoteBlock = !quoteBlock; continue }
-    if (quoteBlock) continue
-    if (/^ {0,3}>/.test(line)) { quoted = true; continue }
-    // A line right after a quote, with no blank line between, continues it.
-    if (quoted && line.trim()) continue
-    quoted = false
-    if (/^( {4,}|\t)/.test(line)) continue
-    lines.push(line.replace(/(`+)[\s\S]*?\1/g, ''))
-  }
-  return lines.join('\n')
-}
-/**
- * True when a line of `text` addresses the agent by `trigger`: at the line's start (at most three spaces in), after any
- * mentions each followed by a separator, the word and a colon (`:` or `：`), in any case. Quotes and code do not count.
- */
-export function summons(text: string, trigger: string): boolean {
-  if (!trigger) return false
-  const mention = '@[\\w.\\-]+(?![\\w.\\-])[\\s,，、]+'
-  const line = new RegExp(`^ {0,3}(?:${mention})*${escapeRegExp(trigger)}\\s*[:：]`, 'i')
-  return ownWords(text).split('\n').some(item => line.test(item))
-}
+export { ownWords, summons }
 /** True when a note or item addresses the agent: by `@login` with `dedicated`, by the trigger word with `personal`. */
 export const addressesAgent = (text: string, identity: GitlabIdentity): boolean =>
   identity.identity === 'personal' ? summons(text, identity.trigger) : mentions(text, identity.login)
@@ -75,8 +42,7 @@ export const addressesAgent = (text: string, identity: GitlabIdentity): boolean 
 export const forOwnerOnly = (text: string, identity: GitlabIdentity): boolean =>
   identity.identity === 'personal' && mentions(ownWords(text), identity.login) && !summons(text, identity.trigger)
 
-/** Han characters without kana read as Chinese; anything else as English, as the end notices choose. */
-export const chinese = (text: string): boolean => /\p{Script=Han}/u.test(text) && !/[\p{Script=Hiragana}\p{Script=Katakana}]/u.test(text)
+export { chinese }
 /**
  * The visible line a `personal` deployment adds under everything the host writes: who wrote it on whose behalf, and how to
  * address the agent rather than the person. It names the account without `@`, so quoting it mentions nobody.

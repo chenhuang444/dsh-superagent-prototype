@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { Config, SETUP_FIELDS, executable, machineOf, resolveDeployment, resolveFeishuBot, setupFields, type Machine, type Probe } from '../src/deployment.ts'
+import { Config, SETUP_FIELDS, executable, machineOf, resolveDeployment, resolveFeishuBot, resolveMeego, setupFields, type Machine, type Probe } from '../src/deployment.ts'
 import { setupChanged } from '../src/app/setup.ts'
 import { SettingsSchema } from '../src/policy.ts'
 import { gitEnv } from './fixtures/git.ts'
@@ -67,15 +67,16 @@ describe('configuration schema', () => {
 describe('setup fields', () => {
   const settings = (sources: Record<string, Record<string, unknown>>) =>
     SettingsSchema.parse({ sources: Object.fromEntries(Object.entries(sources).map(([id, config]) => [id, { enabled: true, config }])) })
-  it('restart only for the fields of the deployment\'s forge and of Feishu', () => {
+  it('restart only for the fields of the deployment\'s forge, of Feishu and of Feishu Project', () => {
     const before = settings({ github: { repository: 'acme/widgets', cli: 'gh' }, gitlab: { url: 'https://gitlab.example.com', project: 'acme/widgets' }, feishu: { cli: 'lark' } })
     const github = settings({ github: { repository: 'acme/other', cli: 'gh' }, gitlab: { url: 'https://gitlab.example.com', project: 'acme/widgets' }, feishu: { cli: 'lark' } })
     const gitlab = settings({ github: { repository: 'acme/widgets', cli: 'gh' }, gitlab: { url: 'https://gitlab.example.com', project: 'acme/other' }, feishu: { cli: 'lark' } })
     const feishu = settings({ github: { repository: 'acme/widgets', cli: 'gh' }, gitlab: { url: 'https://gitlab.example.com', project: 'acme/widgets' }, feishu: { cli: 'lark2' } })
     expect([setupChanged(before, github, 'github'), setupChanged(before, gitlab, 'github'), setupChanged(before, feishu, 'github')]).toEqual([true, false, true])
     expect([setupChanged(before, github, 'gitlab'), setupChanged(before, gitlab, 'gitlab'), setupChanged(before, feishu, 'gitlab')]).toEqual([false, true, true])
-    expect(setupFields('gitlab')).toEqual({ gitlab: ['url', 'project', 'cli', 'identity', 'workerCli', 'trigger'], feishu: ['cli'] })
-    expect(SETUP_FIELDS).toEqual({ github: ['repository', 'cli'], feishu: ['cli'] })
+    expect(setupFields('gitlab')).toEqual({ gitlab: ['url', 'project', 'cli', 'identity', 'workerCli', 'trigger'], feishu: ['cli'],
+      meego: ['cli', 'profile'] })
+    expect(SETUP_FIELDS).toEqual({ github: ['repository', 'cli'], feishu: ['cli'], meego: ['cli', 'profile'] })
   })
 })
 
@@ -120,5 +121,22 @@ describe('setup', () => {
     await refuses('feishuNoBot')
     program(join(dir, 'bin', 'lark-cli'), 'echo "not configured" >&2; exit 1')
     await refuses('feishuCliFailed', { output: expect.stringContaining('not configured') })
+  })
+  it('reads the Feishu Project account from a signed-in meegle profile, or finds none when the Source names no meegle', async () => {
+    expect(await resolveMeego(machine(), {}, probe, path)).toBeUndefined()
+    // lark_user_id is wider than a JSON number keeps exactly; its digits are kept as written.
+    const meegle = program(join(dir, 'bin', 'meegle'), `case "$*" in
+  "--profile bot auth status --format json") echo '{"authenticated":true,"host":"project.example.com"}' ;;
+  "--profile bot user me") echo '{"user_key":"1001","name_cn":"Operator"}' ;;
+  "--profile bot user search --user-keys 1001") echo '[{"user_key":"1001","lark_user_id":7410598334401232924}]' ;;
+  *) echo 'unknown command "user" for "meegle"' >&2; exit 1 ;;
+esac`)
+    expect(await resolveMeego(machine(), { cli: 'meegle', profile: 'bot' }, probe, path))
+      .toEqual({ cli: meegle, profile: 'bot', host: 'project.example.com', userKey: '1001', name: 'Operator', larkUserId: '7410598334401232924' })
+    const login = 'meegle --profile other auth login --host <host>'
+    await expect(resolveMeego(machine(), { cli: 'meegle', profile: 'other' }, probe, path))
+      .rejects.toEqual(setupError('meego', 'meegoSignedOut', { profile: 'other', login, output: expect.stringContaining('unknown command') }))
+    await expect(resolveMeego(machine(), { cli: join(dir, 'missing') }, probe, path))
+      .rejects.toEqual(setupError('meego', 'meegoCliMissing', { output: `${join(dir, 'missing')} is not an executable file` }))
   })
 })

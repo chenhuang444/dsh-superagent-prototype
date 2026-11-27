@@ -54,6 +54,11 @@ export const GithubAccountsSchema = z.object({
   cli: z.string().trim().default(''),
 })
 export const FeishuBotSchema = z.object({ cli: z.string().trim().default('') })
+/** The Meego Source's configuration that setup reads: the host's `meegle` and the profile it signs in with. */
+export const MeegoCliSchema = z.object({
+  cli: z.string().trim().default(''),
+  profile: z.string().trim().regex(/^[A-Za-z0-9_.-]{1,64}$/, 'letters, digits, _ . and -').default('superagent'),
+})
 /**
  * The GitLab Source's configuration that setup reads: the server's address (`https://host[:port]`, no path), the project
  * (`group/name`, subgroups allowed) and the agent's `glab`.
@@ -73,10 +78,10 @@ export const GitlabAccountsSchema = z.object({
 export type GitlabIdentityKind = z.infer<typeof GitlabAccountsSchema>['identity']
 /** Source configuration keys that setup reads, by Source; a change to one of the forge's or Feishu's restarts dsh-superagent. */
 const ACCOUNT_FIELDS: Readonly<Record<string, readonly string[]>> = { github: Object.keys(GithubAccountsSchema.shape),
-  gitlab: Object.keys(GitlabAccountsSchema.shape), feishu: Object.keys(FeishuBotSchema.shape) }
-/** The Source configuration keys setup reads under `forge`: the forge's Source's and Feishu's; another forge's Source has none. */
+  gitlab: Object.keys(GitlabAccountsSchema.shape), feishu: Object.keys(FeishuBotSchema.shape), meego: Object.keys(MeegoCliSchema.shape) }
+/** The Source configuration keys setup reads under `forge`: the forge's Source's, Feishu's and Meego's; another forge's Source has none. */
 export const setupFields = (forge: ForgeKind): Readonly<Record<string, readonly string[]>> =>
-  ({ [forge]: ACCOUNT_FIELDS[forge]!, feishu: ACCOUNT_FIELDS.feishu! })
+  ({ [forge]: ACCOUNT_FIELDS[forge]!, feishu: ACCOUNT_FIELDS.feishu!, meego: ACCOUNT_FIELDS.meego! })
 /** The keys setup reads of a GitHub deployment; `setupFields` gives them for any forge. */
 export const SETUP_FIELDS: Readonly<Record<string, readonly string[]>> = setupFields('github')
 
@@ -90,6 +95,20 @@ export interface Deployment extends Machine {
   /** The GitLab server, project and account, present only when the forge is GitLab. */
   gitlab?: GitlabAccount
   feishu?: FeishuBot
+  /** The Feishu Project `meegle` and the profile the host signs in with, present when the Meego Source names one that exists. */
+  meego?: MeegoCli
+}
+/** The host's `meegle` (absolute path) and its profile, kept apart from the profile the operator uses themselves, and the account it is signed in to. */
+export interface MeegoCli {
+  cli: string; profile: string
+  /** The Feishu Project site the profile is signed in to, as `auth status` reports it (a host name, no scheme). */
+  host: string
+  /** The operator's user_key, under which the agent writes. */
+  userKey: string
+  /** The operator's display name, which signatures name. */
+  name: string
+  /** The operator's lark_user_id, which a mention of them in a comment carries. */
+  larkUserId: string
 }
 export interface GithubAccount { cli: string; login: string; noreply: string }
 /** The deployment's GitHub account; the GitHub Source and the GitHub forge run only when the forge is GitHub. @throws otherwise */
@@ -126,7 +145,9 @@ export interface GitlabAccount {
   trigger: string
   /** The account's role on the project (GitLab access level, the higher of project and group); 40 and above is Maintainer. */
   accessLevel: number
-  /** With `personal`: the day `cli`'s token expires (`YYYY-MM-DD`), when GitLab reported it. */
+  /** True when the account is a bot user, such as the user of a project or group access token. */
+  bot?: boolean
+  /** The day `cli`'s token expires (`YYYY-MM-DD`), when GitLab reported it. */
   expiresAt?: string
   /** With `personal`: the day `workerCli`'s token expires (`YYYY-MM-DD`), when GitLab reported it. */
   workerExpiresAt?: string
@@ -189,7 +210,7 @@ export async function resolveDeployment(machine: Machine, github: unknown, probe
 const DEVELOPER = 30
 const GitlabUser = z.object({
   id: z.number().int().positive(), username: z.string().regex(/^[A-Za-z0-9_.-]+$/),
-  email: z.string().nullish(), commit_email: z.string().nullish(), public_email: z.string().nullish(),
+  email: z.string().nullish(), commit_email: z.string().nullish(), public_email: z.string().nullish(), bot: z.boolean().nullish(),
 })
 const Access = z.object({ access_level: z.number().int() }).nullish()
 const GitlabProject = z.object({
@@ -216,6 +237,8 @@ export async function resolveGitlab(machine: Machine, gitlab: unknown, probe: Pr
   const agent = parsed(GitlabUser, text)
   if (!agent) throw new SetupError('gitlabNoAccount', { host })
   const login = agent.username
+  // A project or group access token signs glab in as a bot user, which is never a person's own account.
+  if (accounts.identity === 'personal' && agent.bot) throw new SetupError('gitlabPersonalBot', { account: login })
   // Use the canonical path returned by GitLab so a renamed or moved project matches what the API reports later.
   const access = parsed(GitlabProject, await api(`projects/${encodeURIComponent(project)}`).catch((error: unknown) => {
     throw new SetupError('gitlabProjectUnreadable', { account: login, project, output: reason(error) })
@@ -225,11 +248,21 @@ export async function resolveGitlab(machine: Machine, gitlab: unknown, probe: Pr
   const level = Math.max(access.permissions?.project_access?.access_level ?? 0, access.permissions?.group_access?.access_level ?? 0)
   if (level < DEVELOPER) throw new SetupError('gitlabProjectReadOnly', { account: login, project: repository })
   const email = agent.commit_email || agent.email || `${agent.id}-${login}@users.noreply.${hostname}`
-  const common = { cli, url, host, login, id: agent.id, email, projectId: access.id, trigger: accounts.trigger, accessLevel: level }
+  const common = { cli, url, host, login, id: agent.id, email, projectId: access.id, trigger: accounts.trigger, accessLevel: level,
+    ...agent.bot ? { bot: true } : {} }
   const resolved: GitlabAccount = accounts.identity === 'personal'
     ? { ...common, identity: 'personal', ...await resolveWorker(machine, accounts.workerCli, call, cli, { id: agent.id, login }, host, path) }
-    : { ...common, identity: 'dedicated' }
+    : { ...common, identity: 'dedicated', ...await dedicatedExpiry(api) }
   return { ...machine, repository, gitlab: resolved, account: { kind: 'gitlab', login, email, repository, web: url } }
+}
+/**
+ * The day a dedicated account's token expires, which the panel warns about ahead of time; nothing when GitLab cannot report
+ * the token (before 15.5) or reports none, since a dedicated account's setup never fails on this read.
+ */
+async function dedicatedExpiry(api: (endpoint: string) => Promise<string>): Promise<Pick<GitlabAccount, 'expiresAt'>> {
+  const answer = await api('personal_access_tokens/self').catch(() => undefined)
+  const token = answer === undefined ? undefined : parsed(TokenSelf, answer)
+  return token?.expires_at ? { expiresAt: token.expires_at } : {}
 }
 /** The scopes a personal mode worker token may hold; it must hold `read_api` and `write_repository`, and never `api`. */
 const WORKER_SCOPES: readonly string[] = ['read_api', 'read_repository', 'write_repository', 'read_user']
@@ -296,4 +329,31 @@ export async function resolveFeishuBot(machine: Machine, feishu: unknown, probe:
   const info = parsed(BotInfo, (await run('api', 'GET', '/open-apis/bot/v3/info', '--as', 'bot', '--format', 'ndjson')).split('\n')[0] ?? '')
   if (!info) return fail(new SetupError('feishuNoBot'))
   return { cli, appId: status.appId, brand: status.brand, botId: info.bot.open_id, name: info.bot.app_name }
+}
+
+const MeegoAuth = z.object({ authenticated: z.boolean(), host: z.string().nullish() })
+const MeegoMe = z.object({ user_key: z.string().regex(/^\d+$/), name_cn: z.string().nullish(), name_en: z.string().nullish() })
+/** The first JSON value of a `meegle` answer, which prints nothing but JSON on success. */
+const meegoJson = <T>(schema: z.ZodType<T>, text: string): T | undefined => parsed(schema, text.trim())
+/**
+ * Verify that the Meego Source's `meegle` exists and its profile is signed in, and read the account the agent writes under.
+ * A problem here pauses only the Meego Source (`Setup.meegoProblem`), as a Feishu bot problem pauses only Feishu.
+ */
+export async function resolveMeego(machine: Machine, meego: unknown, probe: Probe, path = process.env.PATH ?? ''): Promise<MeegoCli | undefined> {
+  const { cli: name, profile } = MeegoCliSchema.parse(meego ?? {})
+  if (!name) return undefined
+  let cli: string
+  try { cli = executable(name, path, workerBin(machine.stateDir)) } catch (error) { throw new SetupError('meegoCliMissing', { output: reason(error) }) }
+  const run = (...args: string[]): Promise<string> => probe([cli, '--profile', profile, ...args])
+  const login = `${name} --profile ${profile} auth login --host <host>`
+  const signedOut = (output = ''): never => { throw new SetupError('meegoSignedOut', { profile, login, ...output ? { output } : {} }) }
+  const auth = meegoJson(MeegoAuth, await run('auth', 'status', '--format', 'json').catch((error: unknown) => signedOut(reason(error))))
+  if (!auth?.authenticated) return signedOut()
+  if (!auth.host) throw new SetupError('meegoHostUnknown', { profile })
+  const me = meegoJson(MeegoMe, await run('user', 'me').catch((error: unknown) => signedOut(reason(error))))
+  if (!me) return signedOut()
+  // `lark_user_id` is a number wider than JSON numbers keep exactly, so it is read from the text as digits.
+  const found = await run('user', 'search', '--user-keys', me.user_key).catch(() => '')
+  const larkUserId = /"lark_user_id"\s*:\s*"?(\d+)/.exec(found)?.[1] ?? ''
+  return { cli, profile, host: auth.host, userKey: me.user_key, name: me.name_cn || me.name_en || me.user_key, larkUserId }
 }

@@ -1,5 +1,5 @@
 /**
- * Process environment and CLI shims that bind git, gh or glab, and lark-cli to the deployment's accounts and block disallowed commands.
+ * Process environment and CLI shims that bind git, gh or glab, lark-cli and meegle to the deployment's accounts and block disallowed commands.
  * Variables read by workers avoid `KEY|PASSWORD|SECRET|TOKEN` in their names because DSH strips credential-shaped variables from child environments.
  * Provides default-path guardrails rather than an OS-level security boundary, as workers run under the operator's OS user.
  */
@@ -85,16 +85,69 @@ async function own(file: string, text: string, mode = 0o644): Promise<void> {
   await rename(temporary, file)
 }
 
+/** The `meegle` commands a worker may run: they only read Feishu Project, or print help. Each is `<group> <command>`. */
+export const MEEGLE_READS: readonly string[] = [
+  ...['get', '+batch-get', 'query', 'list-op-records', 'meta-types', 'meta-fields', 'meta-roles', 'meta-create-fields'].map(name => `workitem ${name}`),
+  'comment list', 'view get', 'view search',
+  ...['get-node', 'list-state-transitions', 'list-state-required', 'meta-node-fields'].map(name => `workflow ${name}`),
+  'relation list', 'relation meta-definitions', 'attachment +download', 'url decode', 'project search', 'user me', 'user search', 'team list', 'team list-members',
+]
+/** The groups of `MEEGLE_READS`; one named without a command prints its help. */
+const MEEGLE_GROUPS = [...new Set(MEEGLE_READS.map(read => read.split(' ')[0]!))]
+/** meegle's global flags that take a value; `run` adds `--profile` itself. */
+const MEEGLE_VALUES = ['-o', '--format', '--select', '--set', '-P', '--params']
+const MEEGLE_SWITCHES = ['-v', '--verbose', '--auto-paginate', '--dry-run', '--envelope', '--refresh', '--version']
+/**
+ * The worker's `meegle`: the host's meegle under the Meego Source's profile, limited to `MEEGLE_READS`, `help`, `inspect`,
+ * `version` and help output. It finds the command's words past the global flags, which may come before, between and right
+ * after them, in both `--flag value` and `--flag=value` forms. Any other flag before the words is refused, because a
+ * command's own flag takes a value too (`comment --content list add` adds a comment). Another command asked for help
+ * (`-h` or `--help` among the flags read) runs as `meegle <group> <command> --help` only. It refuses `--profile`, which
+ * would sign the command in under another account.
+ */
+function meegleShim(cli: string, profile: string, run: (program: string) => string): string {
+  const patterns = (names: readonly string[]): string => names.map(name => name.includes(' ') || name.startsWith('+') ? `'${name}'` : name).join('|')
+  return [
+    'refuse() { echo "meegle: $1" >&2; exit 1; }',
+    'for arg do case $arg in --profile|--profile=*) refuse \'--profile is refused: dsh-superagent passes the profile of its own account.\';; esac; done',
+    'group= sub= help= unclear= value=',
+    'for arg do',
+    '  if [ -n "$value" ]; then value=; continue; fi',
+    '  case $arg in',
+    '    -h|--help) help=1 ;;',
+    `    ${MEEGLE_VALUES.join('|')}) value=1 ;;`,
+    `    -o?*|-P?*|${MEEGLE_VALUES.filter(name => name.startsWith('--')).map(name => `${name}=*`).join('|')}) ;;`,
+    `    ${MEEGLE_SWITCHES.join('|')}|${[...MEEGLE_SWITCHES, '--help'].filter(name => name.startsWith('--')).map(name => `${name}=*`).join('|')}) ;;`,
+    '    -*) [ -n "$sub" ] || unclear=1; break ;;',
+    '    *) if [ -z "$group" ]; then group=$arg; case $group in help|inspect|version) break ;; esac',
+    '       elif [ -z "$sub" ]; then sub=$arg',
+    '       else break; fi ;;',
+    '  esac',
+    'done',
+    '[ -z "$unclear" ] || refuse \'refused: only global flags (-o, --select, --set, -P) may come before the command, so that it can be told apart.\'',
+    'case "$group $sub" in',
+    `  ' '|'help '|'inspect '|'version '|${MEEGLE_GROUPS.map(group => `'${group} '`).join('|')}) ;;`,
+    `  ${patterns(MEEGLE_READS)}) ;;`,
+    '  *) [ -n "$help" ] || refuse "$group${sub:+ $sub} is refused: it may write to Feishu Project, which workers only read. Ask the host to do it; there is no tool for writes yet."',
+    '     # Help alone, without the rest: a later --help=false would turn -h off and run the command.',
+    '     set -- "$group" ${sub:+"$sub"} --help ;;',
+    'esac',
+    `set -- --profile ${shellQuote(profile)} "$@"`,
+    run(cli),
+  ].join('\n')
+}
+
 /**
  * Atomically writes worker CLI shims and the isolated git configuration file into the state directory, refusing to overwrite foreign files.
  * Each shim strips the shim directory from PATH before exec so wrapper scripts resolving `gh`, `glab` or `lark-cli` by name reach the real binary.
  * The deployment's forge (`account.kind`) contributes its own shims, its git credential lines, the hint a blocked command prints
  * and any git hooks (`ForgeEnvironment.hooks`), which the agent's git configuration then names in `core.hooksPath`.
+ * With the Meego Source's meegle (`deployment.meego`), workers get a read-only `meegle` too, which the blocked commands cannot block.
  */
-export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' | 'account' | 'github' | 'gitlab' | 'feishu'>, blockedCommands: readonly string[],
+export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' | 'account' | 'github' | 'gitlab' | 'feishu' | 'meego'>, blockedCommands: readonly string[],
   forge?: ForgeEnvironment): Promise<void> {
   forge ??= (await import('../forge/index.ts')).forgeOf(deployment.account.kind).environment
-  const { stateDir, feishu } = deployment
+  const { stateDir, feishu, meego } = deployment
   const dir = workerBin(stateDir)
   await mkdir(dir, { recursive: true })
   const before = await readdir(dir)
@@ -118,7 +171,8 @@ export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' |
   for (const { name, body } of shims.slice(0, 1)) await shim(name, body)
   await shim('lark-cli', feishu ? run(feishu.cli) : fail('lark-cli is unavailable: this installation has no Feishu bot.'))
   for (const { name, body } of shims.slice(1)) await shim(name, body)
-  const needed = workerCommands(forge)
+  if (meego) await shim('meegle', meegleShim(meego.cli, meego.profile, run))
+  const needed = [...workerCommands(forge), ...meego ? ['meegle'] : []]
   for (const name of new Set(blockedCommands.filter(name => !needed.includes(name)))) {
     await shim(name, fail(`${name} is blocked in this installation; ${forge.blockedHint(deployment)}.`))
   }

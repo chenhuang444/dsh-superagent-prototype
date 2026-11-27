@@ -59,6 +59,7 @@ Each Source's Policy has an admission table. Its rows are receiving scopes:
 
 - **Feishu:** each configured chat, other chats the bot receives mentions from, and direct messages. Other chats are received only when **其他群** is set to **仅 @** on the Feishu card.
 - **GitHub:** new Issues, new pull requests, comments and the default branch's CI.
+- **Feishu Project:** `items`, new work items entering the watched scope (the views and, when switched on, 我的待办), and `comments`. A new work item never addresses the agent, so its row offers only the two cells for unaddressed messages, keyed by the item's creator. To have new bugs in a watched bug view looked into, set its unlisted cell to inferred and keep the accept mode at `observe` at first. The `comments` row offers only the unlisted-addressed cell. Feishu Project has no bot list.
 
 A row has up to three cells. Each cell decides whether a message becomes an explicit request, an inferred candidate or nothing:
 

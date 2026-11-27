@@ -249,7 +249,7 @@ Each model request binds the Session to the current prompt revision. The revisio
 | `src/app/tools/main.ts`, `src/app/tools/executor.ts` | Tool arguments of the main Session and the Executor Sessions into calls of the core classes, and their results into cards |
 | `src/app/http.ts`, `src/app/views/`, `src/app/api.ts` | HTTP requests into calls, and Store reads into the panel's views; `api.ts` types every route for the panel |
 | `src/app/resources.ts`, `src/app/links.ts`, `src/app/cards.ts` | Resource names into reads, source messages into links, records into compact cards for models |
-| `src/sources/github*.ts`, `src/sources/gitlab*.ts`, `src/sources/feishu*.ts`, `src/sources/poll.ts` | GitHub, GitLab and Feishu payloads into Triggers and Thread facts, and messages into CLI calls |
+| `src/sources/github*.ts`, `src/sources/gitlab*.ts`, `src/sources/feishu*.ts`, `src/sources/meego*.ts`, `src/sources/poll.ts` | GitHub, GitLab, Feishu and Feishu Project payloads into Triggers and Thread facts, and messages into CLI calls |
 | `src/deployment.ts`, `src/setup.ts`, `src/infra/` | Setup probes and problems, CLI transport, the agent's process environment |
 
 ## Dependency rules
@@ -379,14 +379,14 @@ Some generic modules still refer to a Source by name:
 | `src/executor/dsh.ts` | The DshExecutor, `WorkerSlots`, `ticketExecution`, `inputMessage` and `mandateInstructions` |
 | `src/executor/background.ts` | A worker's background work in DeepSeek Harness, the shell jobs its Session owns (`ctx.jobs`) and its subagents (`ctx.subagents`): `runningJobs`, `untilQuiet`, `killJobs`, `collectJobs`, `stopSubagents`, `stopBackground`, `until`, and `cancelled`, the workers whose turn a stop of their subagents cancelled |
 | `src/infra/commands.ts` | `Commands`, the CLI transport: `run`; `api` and `pages`, limited to the configured repository and validated; `glab`, `gitlab` and `gitlabPages`, limited to the configured GitLab project the same way; `lark` as the bot; `git`. `CliError` carries the code a command's output reports, such as a GitHub HTTP status, and a command that prints nothing fails with how it ended, never with its arguments; `validItems` skips and counts the malformed items of a list |
-| `src/infra/environment.ts` | The agent's process environment: command shims, the git configuration and credential helper, `runAsWorker`, and the checks of the environment and of a Ticket's directory |
+| `src/infra/environment.ts` | The agent's process environment: command shims, among them the read-only `meegle` of Feishu Project, the git configuration and credential helper, `runAsWorker`, and the checks of the environment and of a Ticket's directory |
 | `src/infra/paths.ts` | The package's root, where packaged files are |
 | `src/infra/text.ts` | Word counts and the chat message limit, `fill` and `sameName` |
 | `src/infra/health.ts` | The `HealthBoard`, every part's health entry, each claimed by its one writer |
 | `src/sources/kind.ts` | The `SourceKind` protocol |
 | `src/sources/registry.ts` | `SourceRegistry` |
 | `src/sources/host.ts` | `SourceHost`, `SourceContext`, `Health`, `health` and the fixed health texts |
-| `src/sources/poll.ts` | What GitHub, GitLab and Feishu polling share: `POLL_HORIZON_MS`, `polled`, `cursorAt`, and `pollThreads`, which keeps a failure on its Thread as `pollError` |
+| `src/sources/poll.ts` | What GitHub, GitLab, Feishu and Feishu Project polling share: `POLL_HORIZON_MS`, `polled`, `cursorAt`, and `pollThreads`, which keeps a failure on its Thread as `pollError` |
 | `src/sources/github.ts` | The GitHub kind and plugin entry, exported as `./github-watch`: a poll round of notifications, the pull requests of open Tickets with their CI, and subscribed Threads |
 | `src/sources/github-trigger.ts` | GitHub comments, reviews, Issue bodies and CI changes as Triggers, and GitHub addresses |
 | `src/sources/github-pull.ts` | The pull request rules: which pull requests a Ticket follows (`claimPull`, `observePull`), the closes it reports to the Engine, and `pullEndNotices`, the chat notice of a Ticket that ended merged or closed |
@@ -398,6 +398,12 @@ Some generic modules still refer to a Source by name:
 | `src/sources/gitlab-mr.ts` | The merge request rules: which merge requests a Ticket follows (`claimMr`, `observeMr`), the closes it reports to the Engine, and `mrEndNotices`, the chat notice of a Ticket that ended merged or closed |
 | `src/sources/gitlab-channel.ts` | The GitLab Channel: notes on Issues and merge requests and replies in their discussions, kept once by a hidden marker, `sent` or `gone` |
 | `src/sources/gitlab-read.ts` | Reads of Issues, merge requests, notes, discussions and pipelines, repository paths, the `gitlab/` resources, and the Thread context of assessments |
+| `src/sources/personal-identity.ts` | What a Source under the operator's own account shares, GitLab `personal` and Feishu Project: `ownWords`, the text without quotes and code; `summons`, whether a line starts with the trigger word, after mentions a Source can normalize first; and the invisible marker of zero-width characters the host appends to what it writes |
+| `src/sources/meego.ts` | The Feishu Project (Meego) kind and plugin entry, exported as `./meego-watch`: its fields, scope, Policy rows (`items`, `comments`), execution variables, facts and search |
+| `src/sources/meego-trigger.ts` | Work items of views and 我的待办 and their comments, as `meegle` answers them, as Triggers; mentions, who wrote a comment (the host, the operator or someone else) and Feishu Project addresses |
+| `src/sources/meego-read.ts` | The Thread context of assessments: a work item's description, then its comments by page |
+| `src/sources/meego-channel.ts` | The Feishu Project Channel: signed comments under the operator's account, kept once by an invisible marker and the host's record of what it wrote, `sent` or `gone` |
+| `src/sources/meego-loops.ts` | The Feishu Project poll round: spaces, views and 我的待办 with their baselines, new work items, and the comments of watched and subscribed work items, read in turns of `maxItems` |
 | `src/sources/feishu.ts` | The Feishu kind and plugin entry, exported as `./feishu-watch` |
 | `src/sources/feishu-trigger.ts` | Feishu messages as Triggers, by one rule for live events, history pages and topic pages |
 | `src/sources/feishu-loops.ts` | The Feishu loops: the event consumer, history recovery, chat names and polling of subscribed topics |
@@ -429,7 +435,7 @@ Some generic modules still refer to a Source by name:
 | `src/client/locales.ts` | All copy in both languages, and the glossary of [001 Domain model](001-domain.md) |
 | `src/client/client.css`, `css.d.ts` | The panel's stylesheet, loaded as text |
 
-`src/sources/github.ts`, `src/sources/gitlab.ts` and `src/sources/feishu.ts` are also the entries of the three Source plugins, built by `tsdown.config.ts` and exported in `package.json` as `./github-watch`, `./gitlab-watch` and `./feishu-watch`. The bundle's `cordis.patch.yml` inserts the four plugins, with GitLab and Feishu disabled.
+`src/sources/github.ts`, `src/sources/gitlab.ts`, `src/sources/feishu.ts` and `src/sources/meego.ts` are also the entries of the four Source plugins, built by `tsdown.config.ts` and exported in `package.json` as `./github-watch`, `./gitlab-watch`, `./feishu-watch` and `./meego-watch`. The bundle's `cordis.patch.yml` inserts the five plugins, with GitLab, Feishu and Feishu Project disabled.
 
 ## Tests
 
@@ -476,6 +482,9 @@ Some generic modules still refer to a Source by name:
 | `tests/gitlab-trigger.spec.ts` | GitLab notes, Issues, merge requests, review decisions and pipelines as Triggers; mentions, bots, search, scope, the Policy part and the execution variables |
 | `tests/gitlab-source.spec.ts` | The GitLab Source's poll rounds: observe switches, review notes, cursors on abort and failure, subscribed Threads, merge request and default-branch pipelines, and its health, among it `notForge` for both forge Sources |
 | `tests/gitlab-mr.spec.ts`, `tests/gitlab-channel.spec.ts`, `tests/gitlab-read.spec.ts` | The merge request rules and end notices; the GitLab Channel's marker, discussion replies and `gone`; the `gitlab/` reads, pipelines as CI, repository paths, Thread context and the forge's registration |
+| `tests/meego-source.spec.ts` | The Feishu Project Source's poll rounds: view and 我的待办 baselines, new work items and the operator's own skipped, comment cursors and the turns of `maxItems`, and its health |
+| `tests/meego-trigger.spec.ts` | Feishu Project work items and comments as Triggers: mention normalization and `agent:` after `回复@…`, the marker, the host's, the operator's and others' comments, scope, the Policy rows and search |
+| `tests/meego-channel.spec.ts` | The Feishu Project Channel: the signature, one comment across a retry, the record of what the host wrote, and `gone` |
 | `tests/github-baseline.spec.ts` | A GitHub deployment's built-in parts, prompts, skills, Executor tool schemas and execution environment, held as snapshots so a change of the code host layer leaves them as they were |
 | `tests/deployment.spec.ts`, `tests/environment.spec.ts`, `tests/index.spec.ts` | The plugin configuration and setup, the agent's process environment, the plugin entry |
 | `tests/service-script.spec.ts` | `scripts/dsh-superagent` against fake `ps`, `tmux` and `dsh` |
@@ -487,7 +496,7 @@ Some generic modules still refer to a Source by name:
 | `tests/class-docs.spec.ts` | Every class in `src` has a JSDoc block before it |
 | `tests/docs.spec.ts` | Numbered documents link only to earlier ones, every local link resolves, no document has merge conflict markers, and this document's tables list every module and every test |
 
-`tests/fixtures/` holds what several tests share: `host.ts`, a simulated DeepSeek Harness host; `panel-server.ts` and `panel.tsx`, the fake management API and the panel around a page; `deployment.ts`, a resolved GitHub or GitLab deployment; `gitlab.ts`, GitLab REST payloads and a `glab` stand-in; `git.ts`, the environment of every git the tests start, which names no repository; and `async.ts`.
+`tests/fixtures/` holds what several tests share: `host.ts`, a simulated DeepSeek Harness host; `panel-server.ts` and `panel.tsx`, the fake management API and the panel around a page; `deployment.ts`, a resolved GitHub or GitLab deployment; `gitlab.ts`, GitLab REST payloads and a `glab` stand-in; `meego.ts`, `meegle` answers of a made-up space on `project.example.com`; `git.ts`, the environment of every git the tests start, which names no repository; and `async.ts`.
 
 ## Persistence
 
@@ -516,7 +525,7 @@ A generated column is computed from its row's JSON and is empty outside its set,
 | Prompt versions | `prompt-revision`, `prompt-version:<n>` |
 | Main Session | `master-id` |
 | Session prompt history | `session-prompts:<session id>` |
-| Source state | Read positions such as `github-cursor:<number>` and `gitlab-cursor:…`, PR and MR CI fingerprints and seen Feishu-topic messages; keys begin with the kind or `thread-` plus a Thread key |
+| Source state | Read positions such as `github-cursor:<number>` and `gitlab-cursor:…`, PR and MR CI fingerprints, seen Feishu-topic messages, and Feishu Project's seen work items, comment cursors (`meego-cursor:<id>`), markers and the comments the host wrote (`meego-written:<id>`); keys begin with the kind or `thread-` plus a Thread key |
 | Display names | `source-labels:<source id>` |
 
 Dismissal is stored on its Decision. Input text is rendered from the Ticket when read, so neither needs a separate key-value record.

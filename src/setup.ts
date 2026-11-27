@@ -1,7 +1,7 @@
 /** Structured startup and configuration errors with the settings location where the operator can fix them. */
 import { fill } from './infra/text.ts'
 
-export type SetupPlace = 'deployment' | 'github' | 'gitlab' | 'feishu'
+export type SetupPlace = 'deployment' | 'github' | 'gitlab' | 'feishu' | 'meego'
 export const SETUP_PROBLEMS = {
   foreignFile: ['deployment', '{file} was not written by dsh-superagent; move it, or choose another state directory.'],
   gitTooOld: ['deployment', 'git does not read the github.com credential configuration dsh-superagent writes; dsh-superagent needs git 2.32 or later.'],
@@ -23,6 +23,7 @@ export const SETUP_PROBLEMS = {
   gitlabProjectUnreadable: ['gitlab', '@{account} cannot read {project}.'],
   gitlabProjectUnreported: ['gitlab', 'The agent glab did not return {project}.'],
   gitlabProjectReadOnly: ['gitlab', '@{account} cannot push to {project}; it needs the Developer role or higher.'],
+  gitlabPersonalBot: ['gitlab', '@{account} is a bot user, such as a project access token\'s; personal mode needs your own account. Set Identity to dedicated to use the token as the agent\'s account.'],
   gitlabWorkerCliUnset: ['gitlab', 'Personal mode needs the worker glab, signed in to the same account with a read_api and write_repository token.'],
   gitlabWorkerCliMissing: ['gitlab', 'The worker glab was not found.'],
   gitlabWorkerCliSignedOut: ['gitlab', 'The worker glab cannot read its account on {host}; sign it in with glab auth login --hostname {host}.'],
@@ -36,6 +37,9 @@ export const SETUP_PROBLEMS = {
   feishuBotNotReady: ['feishu', 'The bot identity of app {app} is {status}; configure the app secret with lark-cli.'],
   feishuUserIdentity: ['feishu', 'The bot lark-cli allows user identities (strict mode {mode}); give the bot its own lark-cli configuration in strict mode bot, as docs/006-deployment.md describes.'],
   feishuNoBot: ['feishu', 'The Feishu bot API did not return the bot\'s open_id.'],
+  meegoCliMissing: ['meego', 'The meegle of the Feishu Project Source was not found.'],
+  meegoSignedOut: ['meego', 'meegle profile {profile} is not signed in; run {login} in a terminal, then check again.'],
+  meegoHostUnknown: ['meego', 'meegle profile {profile} did not report its Feishu Project site.'],
 } as const satisfies Record<string, readonly [SetupPlace, string]>
 export type SetupCode = keyof typeof SETUP_PROBLEMS
 export interface SetupProblem { place: SetupPlace; code: SetupCode; values: Record<string, string>; detail: string }

@@ -6,7 +6,7 @@ Use this guide to install, configure and operate dsh-superagent. It covers accou
 
 - **A dedicated DeepSeek Harness profile**, called `superagent` in this guide. Create it from the Web profile template. It loads the bundle and serves its panel on `127.0.0.1`. Keep it separate from the profile you work in: the plugin changes process-wide `PATH` and git settings, and its process needs independent restarts and upgrades.
 - **An agent account on the code host,** GitHub or GitLab; a deployment works on one. The agent comments, pushes branches and opens pull requests (GitLab: merge requests) as this account, through a CLI signed in only as that account: `gh` for GitHub, `glab` for GitLab.
-- **Optional:** a Feishu bot for chat requests.
+- **Optional:** a Feishu bot for chat requests, and Feishu Project (Meego) for work items and their comments, read under your own account.
 
 Plugin configuration holds the state directory and machine limits. Use the panel for everything else: Sources for the repository and accounts, Policy for allowed lists, and Execution for worker directories and commands.
 
@@ -25,6 +25,7 @@ Both presets run with `danger-full-access` as the operator's OS user and read me
 - The code host: a repository on github.com, or a project on a GitLab instance served at `https://host[:port]` (see [GitLab deployments](#gitlab-deployments)). GitHub Enterprise Server and a GitLab served under a path, such as `https://host/gitlab`, are not supported. To create a checkout per Ticket, keep a local clone from which the prepare command can add worktrees. Install `git-lfs` if that repository uses Git LFS.
 - A model provider configured for DeepSeek Harness. dsh-superagent uses the profile's default model unless the Eval or Execution settings name another.
 - For Feishu: `lark-cli` (tested with 1.0.90) and a Feishu or Lark app with a bot
+- For Feishu Project: `meegle` (tested with 1.0.27) and your own Feishu Project account
 
 ## Accounts
 
@@ -48,7 +49,13 @@ Both presets run with `danger-full-access` as the operator's OS user and read me
 
 ### Agent GitLab account
 
-On GitLab, the agent is a user on the operator's own GitLab instance; `https://gitlab.example.com` stands for its address below.
+On GitLab, the agent is an account of its own on the operator's own GitLab instance; `https://gitlab.example.com` stands for its address below. There are three ways to get one, in this order of preference:
+
+- **A user for the agent,** as in the steps below. Creating a user needs an administrator of the instance.
+- **A project or group access token,** as in [Project or group access token](#project-or-group-access-token) below. Creating one needs the Maintainer role on the project (Owner on the group), and no administrator.
+- **Neither:** the agent works under your own account, as in [Personal access token mode](#personal-access-token-mode-gitlab).
+
+The first two are `dedicated` identity, the GitLab Source's default; the third is `personal`.
 
 1. Create a GitLab user for the agent, and add it to the project as Developer or higher. The agent pushes its branches and opens merge requests, so Reporter is not enough.
 2. As that user, create a personal access token with the scopes `api`, `read_repository` and `write_repository`, and an expiry date you will remember to renew.
@@ -69,6 +76,25 @@ On GitLab, the agent is a user on the operator's own GitLab instance; `https://g
    For an address with a port, pass `--hostname gitlab.example.com:8443`. The last command names the account it is signed in as. dsh-superagent reads it with `glab-agent api --hostname gitlab.example.com user`.
 
    By default glab keeps the token in the operating system's keyring when one is available. glab keys keyring entries by host and does not separate them by `GLAB_CONFIG_DIR`, so a token the operator's own glab keeps there for the same host would collide with the agent's. Add `--insecure-storage` to the login when the operator's own glab uses the same host, or when the keyring is not available to the service, for example in a tmux session started over SSH on Linux: the token is then kept in plain text in `~/.config/glab-agent/config.yml`, which glab writes readable only by the operator's user. Prefer the keyring when neither applies.
+
+### Project or group access token
+
+A project access token comes with a bot user of its own, which GitLab creates with the token: the agent acts as that bot user. It needs no administrator, and its notes, merge requests and commits appear under the token's name, not yours.
+
+1. In the project, open **Settings → Access tokens** and add a token. Give it a name people will recognize, such as `superagent`; it becomes the bot user's display name. Choose the role **Developer**, the scopes `api`, `read_repository` and `write_repository`, and an expiry date you will remember to renew; many GitLab instances require one. A group access token, under the group's **Settings → Access tokens**, works the same way for every project of the group.
+2. Sign a glab wrapper in with it, as in step 3 above, then read the bot user's username, which GitLab chose when it created the token:
+
+   ```sh
+   glab-agent auth login --hostname gitlab.example.com --stdin < token.txt && rm token.txt
+   glab-agent api --hostname gitlab.example.com user
+   ```
+
+   The `username` looks like `project_12_bot_<hash>`, and `bot` is `true`.
+3. On the GitLab Source, leave **Identity** at `dedicated` and set **glab** to the wrapper. Put the people who may ask for work, not the bot, on the GitLab allowed list.
+
+**Using it.** People address the agent by mentioning the bot user. Its username is long, so type `@` and the token's name, and pick the bot from GitLab's suggestions.
+
+**Limits.** A project access token works only in its own project, so the agent cannot read other projects, for example to follow a linked Issue elsewhere. Setup reads the token's expiry date, and the panel warns before it expires; to renew it, rotate the token in **Settings → Access tokens**, sign the wrapper in again with the new token, and check setup again. GitLab deletes the bot user when its token is revoked or, on some versions, when it expires; a new token then has a new bot user, which the people who mention the agent need to learn.
 
 ### Personal access token mode (GitLab)
 
@@ -128,6 +154,38 @@ Setup checks that both glabs are signed in to the same account, that the host to
 
    Both configurations share the keychain entry for the app secret. To remove only the bot configuration, delete its directory; do not run `lark-cli config remove`, which would affect the shared secret.
 
+### Feishu Project (optional)
+
+The Feishu Project Source (Meego) reads work items and their comments from Feishu Project. Feishu Project has no bot account and no token with narrower permissions, so the agent works under your own account, through the `meegle` CLI. This is the same situation as GitLab personal mode, and it uses the same signature line and `agent:` trigger.
+
+It receives:
+
+- **New work items** that enter what you watch: the views you name by link and, when **我的待办** is on, your to-do items in the chosen spaces. A work item counts once, the first time it appears. Items already there when you add a view are not new. Items you created yourself are skipped; ask about them with a comment.
+- **Comments** on watched work items and on work items a Ticket follows. Only a comment can address the agent: a line that starts with the trigger word and a colon, `agent: 看看` for example, optionally after mentions or `回复@…`. Quotes and code do not count. A line like that in a work item's description does not count either, because anyone can edit the description.
+
+1. Install `meegle` (`npm install -g @lark-project/meegle`) and give dsh-superagent a profile of its own, apart from the one you use yourself:
+
+   ```sh
+   meegle config profile create superagent
+   meegle --profile superagent auth login --host <host>
+   meegle --profile superagent auth status --format json
+   ```
+
+   `<host>` is your company's Feishu Project site, such as `project.example.com`. The login opens a browser; add `--device-code` on a machine without one. Do not run `meegle config profile use`: it changes the profile your own `meegle` uses. `meegle` sends failure diagnostics to its vendor by default; `meegle telemetry disable` turns them off.
+2. Enable the `dsh-superagent-meego` entry, as Machine configuration below says. In **Settings → Sources → 飞书项目**, set the `meegle` command or its absolute path, and the profile, `superagent`. Saving checks the login, reads your name and user_key with `user me`, then restarts dsh-superagent. Then choose the spaces, paste the view links and set the switches; these apply without a restart.
+3. Under **Policy → On each Source → 飞书项目**, list the user_keys that may ask for work. `meegle user me` prints yours.
+
+Workers get a `meegle` too, in `<stateDir>/worker-bin`. It runs your `meegle` under the Source's profile and allows only commands that read: work items, comments, views, workflows, relations, attachments to download, `url decode`, `project search`, users, teams, `inspect` and help. It refuses `--profile` and every other command, saying the command writes. Workers cannot write to Feishu Project yet; they reply through dsh-superagent, which posts the comment.
+
+**Limits.**
+
+- Everything the agent posts is a comment under your name. It ends with a line saying that DSH superagent posted it for you and how to address the agent, followed by an invisible marker of zero-width characters. dsh-superagent also records each comment it posts, and tells its own comments from yours by that record or the marker.
+- Feishu Project does not mark comments of automations, so every comment counts as a person's.
+- There is no push: the Source polls, every minute by default. Each round reads the comments of at most 40 work items by default (`maxItems`); when more are watched, they take turns, so a comment can wait up to ⌈watched items / 40⌉ rounds. Work items with a live Ticket are read every round. The `meego` health entry says how many rounds a full turn takes.
+- A comment that does not address the agent reaches it only on a work item with a live Ticket.
+- The worker's `meegle` prevents mistakes, not intent. Workers run as your OS user and can read the keychain, so a worker that tries can write with your account.
+- How long a login lasts is not known yet. `meegle` refreshes the access token itself; once it cannot, its commands fail, and you sign the profile in again with the command of step 1.
+
 ## Install
 
 Run this block once, on a machine that has no `superagent` profile yet:
@@ -148,7 +206,7 @@ Run the profile-creation command only for a new installation. If the profile alr
 
 ## Machine configuration
 
-Copy [examples/profile.cordis.patch.yml](../examples/profile.cordis.patch.yml) to `~/.dsh/profiles/superagent/cordis.patch.yml`, replacing that file, and replace every `<placeholder>`. For Feishu, also enable the `dsh-superagent-feishu` entry there. The `webserver` entry sets the panel's port.
+Copy [examples/profile.cordis.patch.yml](../examples/profile.cordis.patch.yml) to `~/.dsh/profiles/superagent/cordis.patch.yml`, replacing that file, and replace every `<placeholder>`. For Feishu, also enable the `dsh-superagent-feishu` entry there, and for Feishu Project the `dsh-superagent-meego` entry. The `webserver` entry sets the panel's port.
 
 | Key | Required | Meaning |
 | --- | --- | --- |
@@ -206,7 +264,7 @@ Check dsh-superagent: run `scripts/dsh-superagent --profile superagent status` i
 Setup must succeed before polling or work starts. Overview lists missing requirements and links to their settings. A settings change runs setup again. If you fix something outside the application, such as CLI authentication, choose **Check again**.
 
 1. **Sources.** Set the GitHub repository (`owner/name`) and agent CLI, for example `/home/me/.local/bin/gh-agent`; on GitLab, the address, the project and the agent's glab, as [GitLab deployments](#gitlab-deployments) describes. Requests normally arrive through the agent account's notifications. A new Issue or comment mentioning the account arrives on the next poll; adding a mention by editing an existing Issue body does not. Post a new comment instead. For Feishu, set the bot CLI, chats, each chat's receive-all or mentions-only mode, and whether to receive direct messages.
-2. **Policy.** The two example rules can be edited or removed. Under **On each Source**, add the GitHub accounts or GitLab usernames, and Feishu users, who may ask for work; until a list has someone, no request can become a Ticket. With Feishu, a chat can be chosen to sync the list from, at startup and on **Sync now**.
+2. **Policy.** The two example rules can be edited or removed. Under **On each Source**, add the GitHub accounts or GitLab usernames, Feishu users and Feishu Project user_keys, who may ask for work; until a list has someone, no request can become a Ticket. With Feishu, a chat can be chosen to sync the list from, at startup and on **Sync now**.
 3. **Execution.** The directory root and a prepare command. To give each Ticket a checkout of the repository:
 
    ```sh
@@ -231,7 +289,7 @@ Agents may rely on these routes and fields. The other routes in `src/app/api.ts`
 
 | Request | Answer |
 | --- | --- |
-| `GET state` | What every page reads: `setup`, with `problem` and `feishuProblem`, each `null` or a setup problem with `place`, `code`, `values` and `detail`, and `accounts` once setup resolved them; `health`, an entry per part, below, with `state` (`starting`, `ready`, `paused` or `error`), `detail` and `at`; `load`, the Executor Sessions `running`, the Tickets `queued` and `maxWorkers`; `paused`; and `masterId` |
+| `GET state` | What every page reads: `setup`, with `problem`, `feishuProblem` and `meegoProblem`, each `null` or a setup problem with `place`, `code`, `values` and `detail`, and `accounts` once setup resolved them; `health`, an entry per part, below, with `state` (`starting`, `ready`, `paused` or `error`), `detail` and `at`; `load`, the Executor Sessions `running`, the Tickets `queued` and `maxWorkers`; `paused`; and `masterId` |
 | `GET settings` | `blocks`: `policy`, `eval` and `executor`, each with its `value` and its `revision`; `sources`: the Source instances, each with `id`, `kind`, `installed`, its block's `value`, `{"enabled": …, "config": {…}}`, and `revision`, its kind's form, and its setup `problem` when it has one; `policyVersion`; and `environment`, the execution environment's `root` and `variables` |
 | `GET sources` | Each Source's status: `state` (`missing`, `off`, `error`, `setup`, `starting`, `paused` or `ready`), the `health` of its parts, its setup `problem`, the last day's `stats`, the Triggers it `filtered` in that day, and the messages it `dropped` in that day, newest drop first, each with its `channel`, `preview`, `ticket` (`id` and `title`) when it was for one, its `thread` when the store has it, and `dropped.at` and `dropped.reason`, `channelGone` or `channelIgnored` |
 | `PUT settings/<block>` with `{"value": …, "revision": n}` | Saves one block: `saved`, the block's new `revision`, `policy_changed` and `restarting`. `value` is the whole block, as `GET settings` holds it; a missing key takes its default |
@@ -253,7 +311,7 @@ Health entries are grouped by responsibility:
 | `assessment`, `launch`, `delivery`, `relay`, `notice`, `reply` | Stored work described in [003 Execution](003-execution.md); delivery counts waiting work, while reply covers Channel messages |
 | `worker` | Executor Session event handling; appears after its first failure |
 | `workspaces` | Ticket directory cleanup: an error while a directory's last cleanup failed |
-| `github`, `gitlab`, `feishu`, `history` | Source polling, events and history recovery |
+| `github`, `gitlab`, `feishu`, `meego`, `history` | Source polling, events and history recovery; `meego` also names how long the login has left, the work items in scope and how many rounds a full turn of their comments takes |
 | `sync:<source id>` | Allowed-list synchronization |
 
 A refusal has a status and `error`, its English text:
@@ -265,8 +323,8 @@ A refusal has a status and `error`, its English text:
 
 The blocks:
 
-- `source:github`, `source:gitlab`, `source:feishu`: `{"enabled": true, "config": {…}}`. GitLab's config has `url`, `project` and `cli`, `pollSeconds` (60 by default) and the switches `observeIssues`, `observeMergeRequests`, `observeComments` and `observeCi`, off by default. GitHub's config has `repository` and `cli`, and the switches `observeIssues`, `observePulls`, `observeComments` and `observeCi`, off by default, which receive every new Issue, new pull request and comment in the repository and the default branch's CI; Feishu's has `cli`, `chats` as `[{"chatId": "oc_…", "name": "…", "listen": "mentions"}]` (or `"all"`), `directMessages`, and `otherChats` as `"none"` or `"mentions"`.
-- `policy`: `{"rules": […], "sources": {"github": {"allowed": [{"id": "<login>"}], "bots": [{"id": "dependabot[bot]"}]}, "feishu": {"allowed": [{"id": "ou_…", "name": "…"}], "syncChat": "oc_…", "admission": {"oc_…": {"unlistedAddressed": "explicit"}}}}}`. `bots` lists the bots whose messages may become inferred candidates. An `admission` row is keyed by chat id, `other` or `direct` for Feishu, by `issues`, `pulls`, `comments` or `ci` for GitHub, and by `issues`, `merge_requests`, `comments` or `ci` for GitLab, whose part is `{"allowed": [{"id": "<username>"}], "bots": [{"id": "<username>"}]}`; an unset cell takes its default (see [002 Authorization](002-authorization.md)).
+- `source:github`, `source:gitlab`, `source:feishu`, `source:meego`: `{"enabled": true, "config": {…}}`. GitLab's config has `url`, `project` and `cli`, `pollSeconds` (60 by default) and the switches `observeIssues`, `observeMergeRequests`, `observeComments` and `observeCi`, off by default. GitHub's config has `repository` and `cli`, and the switches `observeIssues`, `observePulls`, `observeComments` and `observeCi`, off by default, which receive every new Issue, new pull request and comment in the repository and the default branch's CI; Feishu's has `cli`, `chats` as `[{"chatId": "oc_…", "name": "…", "listen": "mentions"}]` (or `"all"`), `directMessages`, and `otherChats` as `"none"` or `"mentions"`. Feishu Project's (`meego`) has `cli` and `profile` (`superagent` by default), `trigger` (`agent` by default), `spaces` as `[{"projectKey": "…"}]`, `views` as `[{"url": "https://project.example.com/…"}]`, the switch `todo` for 我的待办, off by default, and `pollSeconds` (60), `maxItems` (40) and `failuresBeforeError` (3).
+- `policy`: `{"rules": […], "sources": {"github": {"allowed": [{"id": "<login>"}], "bots": [{"id": "dependabot[bot]"}]}, "feishu": {"allowed": [{"id": "ou_…", "name": "…"}], "syncChat": "oc_…", "admission": {"oc_…": {"unlistedAddressed": "explicit"}}}}}`. `bots` lists the bots whose messages may become inferred candidates. An `admission` row is keyed by chat id, `other` or `direct` for Feishu, by `issues`, `pulls`, `comments` or `ci` for GitHub, by `issues`, `merge_requests`, `comments` or `ci` for GitLab, whose part is `{"allowed": [{"id": "<username>"}], "bots": [{"id": "<username>"}]}`, and by `items` or `comments` for Feishu Project (`meego`), whose part is `{"allowed": [{"id": "<user_key>", "name": "…"}]}` with no bots; an unset cell takes its default (see [002 Authorization](002-authorization.md)).
 - `eval`: `mode`, `timeoutSeconds` and `model`.
 - `executor`: `model`, `tiers`, `maxWorkers`, `directory`, `prepare`, `cleanup`, `retentionDays` and `blockedCommands`. The processing pause is a setting of its own, `paused`, which `POST executor/pause` sets.
 
@@ -283,7 +341,7 @@ curl -s -X PUT -H 'x-orchestrator-request: 1' -H 'content-type: application/json
 
 A deployment works on one code host. With `forge: gitlab` on the `dsh-superagent` entry, the GitLab Source takes the GitHub Source's place: it polls the project's Issues and merge requests and replies on them, and the agent delivers its work as merge requests. The GitHub Source, if it stays enabled, reports *Off: not this deployment's code host* and polls nothing. GitLab has no notifications the agent can read, so the Source reads the Issues and merge requests updated since its last poll, every minute by default, with their discussions. Issues are `#<iid>` and merge requests `!<iid>`; the two are numbered separately.
 
-1. **Account.** Create the agent user, its token and its glab wrapper, as in Agent GitLab account above, or, without one, your own two tokens as in Personal access token mode.
+1. **Account.** Create the agent user, its token and its glab wrapper, as in Agent GitLab account above; or a project or group access token, as in Project or group access token; or, without either, your own two tokens as in Personal access token mode.
 2. **Profile.** Set `forge: gitlab` on the `dsh-superagent` entry, enable `dsh-superagent-gitlab` (`disabled: false`) and disable `dsh-superagent-github` (`disabled: true`), as the comments in [examples/profile.cordis.patch.yml](../examples/profile.cordis.patch.yml) show.
 3. **GitLab Source.** In **Settings → Sources → GitLab**, set the address (`https://gitlab.example.com`, or with a port, without a path or a trailing slash), the project as `group/name` with every subgroup, and the agent's glab, for example `/home/me/.local/bin/glab-agent`. Saving checks the account, the project and the agent's role, then restarts dsh-superagent.
 4. **Policy.** Under **On each Source → GitLab**, list the GitLab usernames that may ask for work, and the bots whose messages may become candidates. GitLab's bots are bot users, such as the users of project and group access tokens; a CI or review bot that runs under an ordinary user counts as a person unless it is on the bot list.
@@ -302,11 +360,11 @@ Auto-merge uses `glab mr merge <iid> --auto-merge --sha <sha>` of the account th
 
 Setup uses the DeepSeek Harness subprocess service, as worker shells do. It removes environment variables whose names contain KEY, PASSWORD, SECRET or TOKEN.
 
-Setup verifies the code host's repository or project and the agent's push access, writes the worker environment, and checks that git uses only the agent's credentials for the code host. A Feishu setup failure disables only the Feishu Source.
+Setup verifies the code host's repository or project and the agent's push access, writes the worker environment, and checks that git uses only the agent's credentials for the code host. A Feishu setup failure disables only the Feishu Source, and a Feishu Project setup failure pauses only the Feishu Project Source.
 
 The process environment that setup writes:
 
-- **Command shims** in `<stateDir>/worker-bin`, first on `PATH`: `gh` runs the agent's CLI; `lark-cli` runs the bot's CLI; blocked commands fail. A shim removes its own directory from `PATH` before it runs its target.
+- **Command shims** in `<stateDir>/worker-bin`, first on `PATH`: `gh` runs the agent's CLI; `lark-cli` runs the bot's CLI; with Feishu Project, `meegle` runs the Source's `meegle` under its profile, for read commands only; blocked commands fail. A shim removes its own directory from `PATH` before it runs its target.
 - **git configuration** in `<stateDir>/worker-gitconfig`: replaces the operator's global and system git configuration. It selects the agent CLI as the github.com credential helper, rewrites GitHub SSH addresses to HTTPS and defines Git LFS filters. Personal git settings such as an HTTP proxy do not apply. No commit identity is set here, git never prompts for credentials, and `GH_TOKEN` and `GITHUB_TOKEN` are removed.
 
 On a GitLab deployment, `glab` runs the agent's glab (in personal mode the worker glab) with `GITLAB_HOST` set to the configured host; `gh` fails, saying to use `glab`, so a worker never reaches the operator's own `gh`; and the git configuration selects `glab auth git-credential` of the same glab as the credential helper of the GitLab address alone, rewrites `git@<host>:` and `ssh://git@<host>/` addresses to HTTPS, and holds nothing for github.com. `GITLAB_TOKEN`, `GITLAB_ACCESS_TOKEN`, `OAUTH_TOKEN`, `CI_JOB_TOKEN` and `GITLAB_HOST` are removed from the agent's environment, so glab uses only the wrapper's login. dsh-superagent's own glab calls pass `--hostname` and turn off glab's update check and prompts. In personal mode the git configuration also sets `core.hooksPath` to `<stateDir>/worker-hooks`, which holds the pre-push guard; each hook there runs the repository's own hook of the same name after it, so hooks such as Git LFS's keep working.
@@ -315,7 +373,7 @@ A file in `worker-bin` or `worker-gitconfig` that dsh-superagent did not write s
 
 ## Try it
 
-From an allowed GitHub account, open an Issue or post a comment containing `@<agent login> <request>`. Within a polling interval (one minute by default), Overview should show a Ticket. The agent acknowledges the request, works in its own Session and directory, and delivers in the original conversation. On GitLab, mention the agent's username in a new Issue or note in the project. For Feishu, mention the bot in a configured chat.
+From an allowed GitHub account, open an Issue or post a comment containing `@<agent login> <request>`. Within a polling interval (one minute by default), Overview should show a Ticket. The agent acknowledges the request, works in its own Session and directory, and delivers in the original conversation. On GitLab, mention the agent's username in a new Issue or note in the project; with a project access token, the bot user's, which GitLab suggests when you type `@` and the token's name; in personal access token mode, start a line with `agent:` instead. For Feishu, mention the bot in a configured chat. For Feishu Project, comment `agent: <request>` on a work item in a watched view.
 
 ## Upgrade
 
@@ -358,6 +416,8 @@ Setup problems appear on the overview with a link to the fix, in the panel's lan
 | `@… cannot read …` (GitLab) or `The agent glab did not return …` | Add the agent user to the project, check the project's path, including subgroups, and that the token has the `api` and `read_repository` scopes |
 | `@… cannot push to …; it needs the Developer role or higher.` | Give the agent user the Developer role or higher on the project or its group |
 | `git does not read the https://… credential configuration dsh-superagent writes` | Install git 2.32 or later |
+| `@… is a bot user, such as a project access token's; personal mode needs your own account.` | The glab is signed in with a project or group access token. Set **Identity** to `dedicated` to use it as the agent's account, as in Project or group access token; or sign both glabs in with your own personal access tokens |
+| The GitLab card warns that the agent's account is on the allowed list | Under `dedicated`, everything that account writes counts as the agent's and is dropped, so its requests do nothing. If the glab holds your own token, set **Identity** to `personal` and add the worker glab; if the account is the agent's, take it off the allowed list |
 | `Personal mode needs the worker glab, …` or `The worker glab was not found.` | Set the worker glab on the GitLab card, as in Personal access token mode |
 | `The worker glab cannot read its account on …` | Sign the worker glab in with its own token, `glab-agent-worker auth login --hostname <host> --stdin`; with the keyring, add `--insecure-storage` |
 | `The worker glab is signed in as @…, not @…` | Sign both glabs in to your own account, each with its own token |
@@ -368,6 +428,9 @@ Setup problems appear on the overview with a link to the fix, in the panel's lan
 | `The bot lark-cli allows user identities` | Point the Feishu Source at a bot-only configuration, as in Feishu bot above |
 | `The bot lark-cli does not work.` or `The bot identity of app … is …` | Check the configuration's app id and secret |
 | `The Feishu bot is not a member of the chat.` | Add the bot to the chat in the chat's settings; the next attempt succeeds |
+| `The meegle of the Feishu Project Source was not found.` | Install `meegle` (`npm install -g @lark-project/meegle`), or set its absolute path on the Feishu Project card |
+| `meegle profile … is not signed in; run … in a terminal, then check again.` | Run the named command, `meegle --profile <profile> auth login --host <host>`, with your company's Feishu Project site as `<host>`, then choose **Check again**. A profile that was never created needs `meegle config profile create <profile>` first |
+| `meegle profile … did not report its Feishu Project site.` | `meegle --profile <profile> auth status --format json` shows no `host`; sign the profile in again with `--host <host>` |
 | `status` exits 2 | A part reports an error, which a restart does not fix: `errors` names each part, as listed under Management API, with its detail; each part clears its own entry once it works again |
 | `status` exits 3 | Setup waits: `setup` says what is missing, and the overview links to the setting that fixes it |
 | `status` exits 1 | The service does not run, runs twice, does not answer, or its runtime reports an error; the output and the newest log say which |
@@ -376,4 +439,5 @@ Setup problems appear on the overview with a link to the fix, in the panel's lan
 | `dsh-superagent configuration has keys it does not use` (log) | Remove the named keys; the message says where each value lives now |
 | The log says the plugin is incompatible with the running dsh | Install a DeepSeek Harness version within the `engines.dsh` range |
 | The panel shows "Failed to load plugins" after a DeepSeek Harness upgrade | Restart the running instance |
-| Nothing happens after a mention | Check that the author is on the Source's allowed list, the Source is on, and processing is not paused. On GitHub, a mention added by editing an Issue's body is not received; mention the agent in a comment. On GitLab, check the `gitlab` health entry, and that the mention is the agent's exact username |
+| Nothing happens after a mention | Check that the author is on the Source's allowed list, the Source is on, and processing is not paused. On GitHub, a mention added by editing an Issue's body is not received; mention the agent in a comment. On GitLab, check the `gitlab` health entry, and that the mention is the agent's exact username. On Feishu Project, check the `meego` health entry, that the comment's line starts with the trigger word and a colon, and that the work item is in a watched view or space |
+| `meegle: … is refused: it may write to Feishu Project …` (worker) | The worker's `meegle` allows only reads; the worker asks dsh-superagent to post instead |

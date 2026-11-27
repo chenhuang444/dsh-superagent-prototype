@@ -45,9 +45,9 @@ export const gitlabKind: SourceKind<GitlabConfig> = {
     { key: 'cli', type: 'text', label: { zh: '智能体的 glab', en: 'Agent glab' },
       hint: { zh: '命令名或绝对路径，通常是用 GLAB_CONFIG_DIR 登录智能体账号的 glab 包装脚本。智能体以它登录的账号行事，执行器以 glab 调用它。保存时检查它登录的账号能否推送到项目，然后重启 dsh-superagent。', en: 'A command name or absolute path, usually a glab wrapper signed in to the agent account through GLAB_CONFIG_DIR. The agent acts as the account it is signed in to, and the Executor calls it as glab. Saving checks that this account can push to the project, then restarts dsh-superagent.' } },
     { key: 'identity', type: 'select', label: { zh: '账号身份', en: 'Identity' },
-      options: [{ value: 'dedicated', label: { zh: 'dedicated：智能体自己的账号', en: 'dedicated: the agent\'s own account' } },
+      options: [{ value: 'dedicated', label: { zh: 'dedicated：智能体自己的账号（专门建的用户，或项目访问令牌）', en: 'dedicated: the agent\'s own account (a user made for it, or a project access token)' } },
         { value: 'personal', label: { zh: 'personal：我本人的账号（个人访问令牌）', en: 'personal: my own account (personal access tokens)' } }],
-      hint: { zh: 'dedicated：机器人或专门建的用户，@ 它就是找智能体。personal：智能体用你的个人访问令牌行事，它写的内容带隐藏标记和署名；找智能体要在行首写触发词加冒号，@ 你是找你本人。还要设置执行器的 glab，见 docs/006-deployment.md。保存后重启 dsh-superagent。', en: 'dedicated: a bot or a user made for it, and mentioning it addresses the agent. personal: the agent acts with your personal access tokens and marks and signs what it writes; people address it with the trigger word and a colon at a line start, and mentioning you reaches you. Also set Worker glab; see docs/006-deployment.md. Saving restarts dsh-superagent.' } },
+      hint: { zh: 'dedicated：专门建的用户，或项目、组访问令牌自带的机器人用户，@ 它就是找智能体；不要用你本人的令牌，否则你自己的请求会被当成智能体写的而丢掉。personal：智能体用你的个人访问令牌行事，它写的内容带隐藏标记和署名；找智能体要在行首写触发词加冒号，@ 你是找你本人。还要设置执行器的 glab，见 docs/006-deployment.md。保存后重启 dsh-superagent。', en: 'dedicated: a user made for it, or the bot user of a project or group access token, and mentioning it addresses the agent; never your own token, or your own requests would count as the agent\'s and be dropped. personal: the agent acts with your personal access tokens and marks and signs what it writes; people address it with the trigger word and a colon at a line start, and mentioning you reaches you. Also set Worker glab; see docs/006-deployment.md. Saving restarts dsh-superagent.' } },
     { key: 'workerCli', type: 'text', label: { zh: '执行器的 glab', en: 'Worker glab' },
       hint: { zh: '只在身份为 personal 时需要：登录同一个账号、令牌只有 read_api 和 write_repository 的 glab 包装脚本。执行器用它读 GitLab 和推送分支，写评论、开 MR 都经 dsh-superagent。', en: 'Needed only with personal identity: a glab wrapper signed in to the same account with a token that has only read_api and write_repository. The Executor reads GitLab and pushes branches with it; notes and MRs are written through dsh-superagent.' } },
     { key: 'trigger', type: 'text', pattern: '[A-Za-z][A-Za-z0-9_\\-]{0,31}', label: { zh: '触发词', en: 'Trigger' },
@@ -124,8 +124,8 @@ export const gitlabKind: SourceKind<GitlabConfig> = {
         DSH_SUPERAGENT_GITLAB_MR_IID: isMr ? String(iid) : '', DSH_SUPERAGENT_GITLAB_MR_HEAD: isMr ? `refs/merge-requests/${iid}/head` : '' }
     },
   },
-  facts: (deployment): Record<string, Localized | string> => deployment?.gitlab ? {
-    ...personalFacts(deployment.gitlab),
+  facts: (deployment, policy): Record<string, Localized | string> => deployment?.gitlab ? {
+    ...dedicatedFacts(deployment.gitlab, policy), ...personalFacts(deployment.gitlab), ...expiryFacts(deployment.gitlab),
     cli: deployment.gitlab.identity === 'personal'
       ? { zh: `本人账号 @${deployment.gitlab.login}，智能体写的内容带标记和署名`, en: `Own account @${deployment.gitlab.login}; what the agent writes is marked and signed` }
       : { zh: `当前账号 @${deployment.gitlab.login}`, en: `Current account @${deployment.gitlab.login}` },
@@ -148,9 +148,25 @@ function personalFacts(gitlab: NonNullable<Deployment['gitlab']>): Record<string
   if (gitlab.accessLevel >= MAINTAINER) notes.push({ zh: '你在项目里是 Maintainer 或更高：执行器的令牌能推送受保护分支，建议把默认分支设为不允许直接推送。', en: 'You are a Maintainer or more in the project: the Executor token can push to protected branches; consider allowing no direct pushes to the default branch.' })
   if (gitlab.tokenUnchecked) notes.push({ zh: 'GitLab 没有报告令牌的权限和到期日（需要 GitLab 15.5 或更新）；请自己确认执行器的令牌只有 read_api 和 write_repository。', en: 'GitLab did not report the tokens\' scopes and expiry (this needs GitLab 15.5 or later); check yourself that the Executor token has only read_api and write_repository.' })
   if (notes.length) facts.identity = { zh: notes.map(note => note.zh).join(' '), en: notes.map(note => note.en).join(' ') }
-  const soon = [expiring(gitlab.expiresAt) && `cli ${gitlab.expiresAt}`, expiring(gitlab.workerExpiresAt) && `workerCli ${gitlab.workerExpiresAt}`].filter(Boolean).join(', ')
-  if (soon) facts.workerCli = { zh: `令牌快到期或已到期（${soon}）：建新令牌，重新登录对应的 glab，然后重新检查。`, en: `Tokens expire soon or have expired (${soon}): create new ones, sign the matching glab in again, then check again.` }
   return facts
+}
+/** A warning when a token expires within `EXPIRY_WARNING_DAYS` or has expired, under the field of its glab. */
+function expiryFacts(gitlab: NonNullable<Deployment['gitlab']>): Record<string, Localized> {
+  const soon = [expiring(gitlab.expiresAt) && `cli ${gitlab.expiresAt}`, expiring(gitlab.workerExpiresAt) && `workerCli ${gitlab.workerExpiresAt}`].filter(Boolean).join(', ')
+  if (!soon) return {}
+  return { [gitlab.identity === 'personal' ? 'workerCli' : 'url']: { zh: `令牌快到期或已到期（${soon}）：建新令牌，重新登录对应的 glab，然后重新检查。`, en: `Tokens expire soon or have expired (${soon}): create new ones, sign the matching glab in again, then check again.` } }
+}
+/**
+ * Under `dedicated`: a warning when the agent's account is on the allowed list and is no bot. That is almost always a person's
+ * own account signed in with identity left at `dedicated`, where every note of that account counts as the agent's and is
+ * dropped, so the person's requests silently do nothing.
+ */
+function dedicatedFacts(gitlab: NonNullable<Deployment['gitlab']>, policy: Record<string, unknown> | undefined): Record<string, Localized> {
+  if (gitlab.identity !== 'dedicated' || gitlab.bot) return {}
+  const allowed = Array.isArray(policy?.allowed) ? policy.allowed as { id?: unknown }[] : []
+  if (!allowed.some(entry => typeof entry.id === 'string' && entry.id.toLowerCase() === gitlab.login.toLowerCase())) return {}
+  return { identity: { zh: `@${gitlab.login} 在能发起工作的名单里。dedicated 时这个账号写的一切都算智能体自己的，会被丢掉：如果这是你本人的账号，把账号身份改成 personal；如果是智能体的账号，把它从名单里去掉。`,
+    en: `@${gitlab.login} is on the allowed list. With dedicated, everything this account writes counts as the agent's own and is dropped: if this is your own account, set Identity to personal; if it is the agent's, take it off the list.` } }
 }
 export const name = 'dsh-superagent-gitlab'
 export const inject = ['orchestrator']

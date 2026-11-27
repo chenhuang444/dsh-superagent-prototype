@@ -45,14 +45,16 @@ describe('GitLab setup', () => {
   it('reads the agent\'s account and the project through the configured host, skipping the worker shims', async () => {
     const calls: string[][] = []
     const deployment = await resolveGitlab(machine(), config, fake(answers(), calls), path)
-    expect(calls).toEqual([[cli, 'api', '--hostname', 'gitlab.example.com', 'user'], [cli, 'api', '--hostname', 'gitlab.example.com', 'projects/acme%2Fwidgets']])
+    expect(calls).toEqual([[cli, 'api', '--hostname', 'gitlab.example.com', 'user'], [cli, 'api', '--hostname', 'gitlab.example.com', 'projects/acme%2Fwidgets'],
+      [cli, 'api', '--hostname', 'gitlab.example.com', 'personal_access_tokens/self']])
     expect(deployment).toMatchObject({ forge: 'gitlab', repository: 'acme/widgets',
       gitlab: { cli, url: 'https://gitlab.example.com', host: 'gitlab.example.com', login: 'agent-bot', id: 7, email: 'agent-bot@users.example.com', projectId: 42,
         identity: 'dedicated', trigger: 'agent', accessLevel: 30 },
       account: { kind: 'gitlab', login: 'agent-bot', email: 'agent-bot@users.example.com', repository: 'acme/widgets', web: 'https://gitlab.example.com' } })
     expect(deployment).not.toHaveProperty('github')
     expect(deployment.gitlab).not.toHaveProperty('workerCli')
-    expect(setupFields('gitlab')).toEqual({ gitlab: ['url', 'project', 'cli', 'identity', 'workerCli', 'trigger'], feishu: ['cli'] })
+    expect(setupFields('gitlab')).toEqual({ gitlab: ['url', 'project', 'cli', 'identity', 'workerCli', 'trigger'], feishu: ['cli'],
+      meego: ['cli', 'profile'] })
   })
   it('keeps the port in the host glab is asked for, and uses the project\'s canonical path and a subgroup', async () => {
     const moved = { ...PROJECT, path_with_namespace: 'acme/platform/widgets' }
@@ -93,6 +95,15 @@ describe('GitLab setup', () => {
     await fails('gitlabProjectReadOnly', { account: 'agent-bot', project: 'acme/widgets' }, config,
       fake(answers({ 'gitlab.example.com projects/acme%2Fwidgets': { ...PROJECT, permissions: { project_access: { access_level: 20 }, group_access: null } } })))
   })
+  it('reads a dedicated token\'s expiry and whether the account is a bot, and never fails on the token read', async () => {
+    const bot = { ...USER, username: 'project_42_bot_abc', bot: true }
+    const read = (token: unknown) => resolveGitlab(machine(), config,
+      fake(answers({ 'gitlab.example.com user': bot, 'gitlab.example.com personal_access_tokens/self': token })), path)
+    expect((await read({ scopes: ['api'], expires_at: '2027-03-01' })).gitlab).toMatchObject({ login: 'project_42_bot_abc', bot: true, expiresAt: '2027-03-01' })
+    expect((await read({ scopes: ['api'], expires_at: null })).gitlab).not.toHaveProperty('expiresAt')
+    expect((await read(undefined)).gitlab).not.toHaveProperty('expiresAt')
+    expect((await read('not json')).gitlab).toMatchObject({ bot: true })
+  })
   it('refuses an address with a path or trailing slash and a project without a group', async () => {
     for (const url of ['http://gitlab.example.com', 'https://gitlab.example.com/', 'https://gitlab.example.com/gitlab', 'gitlab.example.com']) {
       await expect(resolveGitlab(machine(), { ...config, url }, fake(answers()), path)).rejects.toThrow('https://host[:port]')
@@ -130,6 +141,9 @@ describe('GitLab setup', () => {
       expect(unparsed.gitlab).not.toHaveProperty('workerExpiresAt')
     })
     it('names what personal mode needs of the worker\'s glab and the tokens', async () => {
+      // A project access token's bot user is never a person's own account.
+      await fails('gitlabPersonalBot', { account: 'project_42_bot_abc' }, personal,
+        fake(tokens({ 'gitlab.example.com user': { ...USER, username: 'project_42_bot_abc', bot: true } })))
       await fails('gitlabWorkerCliUnset', {}, { ...personal, workerCli: '' }, fake(tokens()))
       await fails('gitlabWorkerCliMissing', { output: 'glab-missing is not an executable file on PATH' }, { ...personal, workerCli: 'glab-missing' }, fake(tokens()))
       await fails('gitlabWorkerCliSignedOut', { host: 'gitlab.example.com', output: 'glab: 404 Not Found (HTTP 404)' }, personal,
@@ -151,7 +165,7 @@ describe('GitLab setup', () => {
     it('keeps a dedicated account\'s setup as it was, whatever the worker settings say', async () => {
       const calls: string[][] = []
       const deployment = await resolveGitlab(machine(), { ...config, workerCli: 'glab-worker' }, fake(answers(), calls), path)
-      expect(calls).toHaveLength(2)
+      expect(calls).toHaveLength(3)
       expect(deployment.gitlab).toMatchObject({ identity: 'dedicated', trigger: 'agent' })
       expect(deployment.gitlab).not.toHaveProperty('workerCli')
     })

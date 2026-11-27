@@ -14,6 +14,7 @@ export const HEALTH_TEXT = {
   notForge: 'Off: not this deployment\'s code host',
   feishuCliUnset: 'The Source is on, and its bot lark-cli is not set',
   feishuBotMissing: 'Waiting for the Feishu bot',
+  meegoCliUnset: 'The Source is on, and its meegle is not set',
   pollFailures: '{count} consecutive failed polls; last: {error}',
 } as const
 export type HealthCode = keyof typeof HEALTH_TEXT
